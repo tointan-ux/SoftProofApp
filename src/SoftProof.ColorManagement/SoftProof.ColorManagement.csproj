@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AssemblyName>SoftProof.ColorManagement</AssemblyName>
+    <RootNamespace>SoftProof.ColorManagement</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SoftProof.Core\SoftProof.Core.csproj" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- LittleCMS native library. Copied to the ROOT of every consuming app's output folder
+       (next to SoftProof.UI.exe). Loose files under runtimes\<rid>\native are NOT probed by the
+       .NET runtime unless they are declared in deps.json (NuGet-style), so the old
+       runtimes\win-x64\native\ destination produced "unable to load DLL 'lcms2'". -->
+  <ItemGroup>
+    <None Update="runtimes\win-x64\native\lcms2.dll">
+      <Link>lcms2.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,15 @@
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\bin\Release\net8.0-windows\SoftProof.Core.deps.json
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\bin\Release\net8.0-windows\SoftProof.Core.dll
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\bin\Release\net8.0-windows\SoftProof.Core.pdb
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\bin\Release\net8.0-windows\SoftProof.Core.xml
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.csproj.AssemblyReference.cache
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.AssemblyInfoInputs.cache
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.AssemblyInfo.cs
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.csproj.CoreCompileInputs.cache
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.sourcelink.json
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.dll
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\refint\SoftProof.Core.dll
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.xml
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\SoftProof.Core.pdb
+C:\Users\CPU\SoftProofApp\src\SoftProof.Core\obj\Release\net8.0-windows\ref\SoftProof.Core.dll

@@ -1,0 +1,201 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>SoftProof.Core</name>
+    </assembly>
+    <members>
+        <member name="F:SoftProof.Core.Analysis.PreflightStatus.NotRun">
+            <summary>The check could not be performed (missing data, or analysis not implemented).</summary>
+        </member>
+        <member name="T:SoftProof.Core.Analysis.PreflightAnalyzer">
+            <summary>
+            Preflight checks computed from the loaded plate rasters and screening metadata.
+            Only checks that can genuinely be derived from that data report Pass/Warning/Fail;
+            the rest report <see cref="F:SoftProof.Core.Analysis.PreflightStatus.NotRun"/> rather than pretending.
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.IRipParser">
+            <summary>
+            Interface for RIP file parsers
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IRipParser.CanParseAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Detect if file can be parsed by this parser
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IRipParser.ParseAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Parse RIP file and return print job
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IRipParser.ParseMultipleAsync(System.Collections.Generic.IEnumerable{System.String},System.Threading.CancellationToken)">
+            <summary>
+            Parse multiple files (for multi-file separations)
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.IColorEngine">
+            <summary>
+            Interface for color management engine
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IColorEngine.LoadProfileAsync(System.String,System.Threading.CancellationToken)">
+            <summary>
+            Load ICC profile from file
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IColorEngine.CreateTransformAsync(SoftProof.Core.Interfaces.IccProfile,SoftProof.Core.Interfaces.IccProfile,SoftProof.Core.Models.RenderingIntent,System.Boolean,System.Threading.CancellationToken)">
+            <summary>
+            Create transform between two profiles
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IColorEngine.CreateProofTransformAsync(SoftProof.Core.Interfaces.IccProfile,SoftProof.Core.Interfaces.IccProfile,SoftProof.Core.Models.ProofSettings,System.Threading.CancellationToken)">
+            <summary>
+            Create proofing transform (display -> simulation)
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IColorEngine.ApplyTransformAsync(SoftProof.Core.Interfaces.ColorTransform,SoftProof.Core.Interfaces.BitmapData,System.Threading.CancellationToken)">
+            <summary>
+            Apply transform to bitmap
+            </summary>
+        </member>
+        <member name="M:SoftProof.Core.Interfaces.IColorEngine.CalculateDeltaE(System.Single[],System.Single[],SoftProof.Core.Interfaces.DeltaEFormula)">
+            <summary>
+            Calculate DeltaE between two colors
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.IccProfile">
+            <summary>
+            ICC Profile wrapper
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.ProfileClass">
+            <summary>
+            ICC Profile class
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.ColorTransform">
+            <summary>
+            Color transform
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.ProofTransform">
+            <summary>
+            Proofing transform (includes simulation + display)
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.BitmapData">
+            <summary>
+            Bitmap data for processing
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.PixelFormat">
+            <summary>
+            Pixel formats supported
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.DeltaEFormula">
+            <summary>
+            DeltaE calculation formulas
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Interfaces.DeltaEResult">
+            <summary>
+            DeltaE calculation result
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.PlateLayer">
+            <summary>
+            Raster data for one plate (separation), stored as 8-bit ink coverage (0 = no ink, 255 = solid).
+            Also carries the per-plate display state (visible / solo / inverted) used by the viewer.
+            </summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.PlateLayer.Coverage">
+            <summary>Row-major 8-bit coverage, <see cref="P:SoftProof.Core.Models.PlateLayer.Width"/> * <see cref="P:SoftProof.Core.Models.PlateLayer.Height"/> bytes.</summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.PlateLayer.R">
+            <summary>Ink colour used to display this plate (sRGB).</summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.PlateLayer.InkedAreaPercent">
+            <summary>Average ink coverage over the whole plate, in percent. Call <see cref="M:SoftProof.Core.Models.PlateLayer.ComputeStats"/> first.</summary>
+        </member>
+        <member name="M:SoftProof.Core.Models.PlateLayer.SamplePercent(System.Int32,System.Int32,System.Int32)">
+            <summary>
+            Mean plate coverage (percent) in a square aperture centred on pixel (cx, cy).
+            Pixels outside the plate are ignored; returns 0 if the aperture is entirely outside.
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.PrintJob">
+            <summary>
+            Represents a print job from a RIP
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.RipFormat">
+            <summary>
+            Supported RIP output formats
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.JobStatus">
+            <summary>
+            Job processing status
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.JobMetadata">
+            <summary>
+            Metadata extracted from RIP job
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.ColorSpace">
+            <summary>
+            Color space of the job
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.Separation">
+            <summary>
+            Individual separation (plate) in a job
+            </summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.Separation.ScreenAngle">
+            <summary>Screen angle in degrees as reported by the RIP (meaningful only if <see cref="P:SoftProof.Core.Models.Separation.ScreenLpi"/> &gt; 0).</summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.Separation.ScreenLpi">
+            <summary>Screen ruling in lines per inch; 0 = unknown / not screened (solid or line art).</summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.Separation.DotShape">
+            <summary>Dot shape name as reported by the RIP, e.g. "Euclidean" or "Round".</summary>
+        </member>
+        <member name="P:SoftProof.Core.Models.Separation.IsTechnical">
+            <summary>Technical plate (dieline, registration, etc.) that is not printed in ink.</summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.SeparationColor">
+            <summary>
+            Standard separation colors
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.ProofSettings">
+            <summary>
+            Soft proofing settings (simulation parameters)
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.RenderingIntent">
+            <summary>
+            ICC Rendering intents
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.ScreeningType">
+            <summary>
+            Screening types
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.MeasurementResult">
+            <summary>
+            Measurement result from densitometer/colorimeter
+            </summary>
+        </member>
+        <member name="T:SoftProof.Core.Models.MeasurementRegion">
+            <summary>
+            Region of interest for measurement
+            </summary>
+        </member>
+    </members>
+</doc>

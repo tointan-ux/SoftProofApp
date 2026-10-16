@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>SoftProof.RIPParsers</name>
+    </assembly>
+    <members>
+        <member name="T:SoftProof.RIPParsers.OneBitTiffSeparationParser">
+            <summary>
+            Parser for 1-bit TIFF separations (one TIFF per separation/plate)
+            </summary>
+        </member>
+        <member name="T:SoftProof.RIPParsers.MultiChannelTiffParser">
+            <summary>
+            Parser for multi-channel TIFF (all separations in one file)
+            </summary>
+        </member>
+        <member name="T:SoftProof.RIPParsers.LenFileParser">
+            <summary>
+            Parser for Esko LEN format
+            </summary>
+        </member>
+        <member name="T:SoftProof.RIPParsers.RipParserRegistry">
+            <summary>
+            Parser registry - auto-detects and routes to appropriate parser
+            </summary>
+        </member>
+        <member name="T:SoftProof.RIPParsers.HarlequinPageBufferParser">
+            <summary>
+            Parser for Harlequin Page Buffer format (.pbuf, .hqn)
+            </summary>
+        </member>
+    </members>
+</doc>

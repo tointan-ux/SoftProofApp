@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>SoftProof.Tests</AssemblyName>
+    <RootNamespace>SoftProof.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SoftProof.Core\SoftProof.Core.csproj" />
+    <ProjectReference Include="..\SoftProof.ColorManagement\SoftProof.ColorManagement.csproj" />
+    <ProjectReference Include="..\SoftProof.RIPParsers\SoftProof.RIPParsers.csproj" />
+    <ProjectReference Include="..\SoftProof.Viewer\SoftProof.Viewer.csproj" />
+    <ProjectReference Include="..\SoftProof.Tools\SoftProof.Tools.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.0" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.0" />
+    <PackageReference Include="Moq" Version="4.20.0" />
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+  </ItemGroup>
+</Project>

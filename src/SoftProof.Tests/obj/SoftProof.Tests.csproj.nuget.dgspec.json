@@ -1,0 +1,487 @@
+{
+  "format": 1,
+  "restore": {
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tests\\SoftProof.Tests.csproj": {}
+  },
+  "projects": {
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj",
+        "projectName": "SoftProof.ColorManagement",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "Microsoft.Extensions.Logging.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj",
+        "projectName": "SoftProof.Core",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "Microsoft.Extensions.Logging.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj",
+        "projectName": "SoftProof.RIPParsers",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "Microsoft.Extensions.Logging.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "SixLabors.ImageSharp": {
+              "target": "Package",
+              "version": "[3.1.0, )"
+            },
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tests\\SoftProof.Tests.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tests\\SoftProof.Tests.csproj",
+        "projectName": "SoftProof.Tests",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tests\\SoftProof.Tests.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tests\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\SoftProof.Tools.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\SoftProof.Tools.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "FluentAssertions": {
+              "target": "Package",
+              "version": "[6.12.0, )"
+            },
+            "Microsoft.NET.Test.Sdk": {
+              "target": "Package",
+              "version": "[17.8.0, )"
+            },
+            "Moq": {
+              "target": "Package",
+              "version": "[4.20.0, )"
+            },
+            "xunit": {
+              "target": "Package",
+              "version": "[2.6.0, )"
+            },
+            "xunit.runner.visualstudio": {
+              "target": "Package",
+              "version": "[2.5.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\SoftProof.Tools.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\SoftProof.Tools.csproj",
+        "projectName": "SoftProof.Tools",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\SoftProof.Tools.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Tools\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "MathNet.Numerics": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "Microsoft.Extensions.Logging.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj",
+        "projectName": "SoftProof.Viewer",
+        "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\SoftProof.Viewer.csproj",
+        "packagesPath": "C:\\Users\\CPU\\.nuget\\packages\\",
+        "outputPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Viewer\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\CPU\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.ColorManagement\\SoftProof.ColorManagement.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.Core\\SoftProof.Core.csproj"
+              },
+              "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj": {
+                "projectPath": "C:\\Users\\CPU\\SoftProofApp\\src\\SoftProof.RIPParsers\\SoftProof.RIPParsers.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "Microsoft.Extensions.Logging.Abstractions": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "System.Drawing.Common": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
+            "WriteableBitmapEx": {
+              "target": "Package",
+              "version": "[1.6.8, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.WindowsDesktop.App.WPF": {
+              "privateAssets": "none"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\8.0.426/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
