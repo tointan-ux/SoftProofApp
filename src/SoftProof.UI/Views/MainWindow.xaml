@@ -599,9 +599,15 @@
         <!-- ================= Status bar ================= -->
         <Border Grid.Row="3" Background="{StaticResource SpPanelBg}" Padding="12,4"
                 BorderBrush="{StaticResource SpBorder}" BorderThickness="0,1,0,0">
-            <DockPanel>
-                <TextBlock DockPanel.Dock="Right" Text="{Binding JobStatus}" Style="{StaticResource SpMuted}" />
-                <TextBlock Text="{Binding StatusText}" FontSize="11" TextTrimming="CharacterEllipsis" />
+            <DockPanel LastChildFill="True">
+                <TextBlock DockPanel.Dock="Right" Text="{Binding JobStatus}" Style="{StaticResource SpMuted}"
+                           VerticalAlignment="Center" Margin="10,0,0,0" />
+                <Button DockPanel.Dock="Right" Content="Cancel" Command="{Binding CancelLoadCommand}"
+                        IsEnabled="{Binding IsLoading}" Margin="10,0,0,0" Padding="8,1" FontSize="11" />
+                <ProgressBar DockPanel.Dock="Right" Width="140" Height="6" VerticalAlignment="Center"
+                             Minimum="0" Maximum="100" Value="{Binding LoadProgress}" Margin="10,0,0,0" />
+                <TextBlock Text="{Binding StatusText}" FontSize="11" TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" />
             </DockPanel>
         </Border>
     </Grid>

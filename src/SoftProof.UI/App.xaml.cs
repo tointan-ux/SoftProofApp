@@ -8,6 +8,8 @@ using SoftProof.UI.Views;
 using SoftProof.Core.Interfaces;
 using SoftProof.ColorManagement;
 using SoftProof.RIPParsers;
+using SoftProof.RIPParsers.Raster;
+using SoftProof.RIPParsers.Raster.Pyramid;
 using SoftProof.Tools;
 using SoftProof.Viewer;
 
@@ -104,6 +106,11 @@ public partial class App : Application
                     // concrete type ONLY. Registering it as IRipParser too would make it a
                     // dependency of itself (circular dependency at startup).
                     services.AddSingleton<RipParserRegistry>();
+
+                    // Raster pipeline: decodes parsed jobs into PlateLayers (TIFF strips, PBF plates).
+                    services.AddSingleton<PyramidCache>();
+                    services.AddSingleton<IPlateLoader>(sp =>
+                        new PlateLoader(sp.GetRequiredService<PyramidCache>()));
                 
                     // Tools
                     services.AddSingleton<InverseDotGainTool>();
@@ -128,5 +135,5 @@ public partial class App : Application
 public class ViewModelLocator
 {
     public MainViewModel Main => (Application.Current as App)?.AppHost?.Services.GetRequiredService<MainViewModel>() 
-        ?? new MainViewModel(null!, null!, null!, null!, null!, null!);
+        ?? new MainViewModel(null!, null!, null!, null!, null!, null!, null!);
 }

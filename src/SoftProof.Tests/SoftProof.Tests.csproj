@@ -20,4 +20,9 @@
     <PackageReference Include="Moq" Version="4.20.0" />
     <PackageReference Include="FluentAssertions" Version="6.12.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Fixtures\**\*.tif" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Fixtures\**\*.pbuf" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

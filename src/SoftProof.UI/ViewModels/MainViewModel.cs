@@ -4,6 +4,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using SoftProof.Core.Interfaces;
+using SoftProof.Core.Analysis;
 using SoftProof.Core.Models;
 using SoftProof.RIPParsers;
 using SoftProof.Viewer;
@@ -23,6 +24,7 @@ public partial class MainViewModel : ObservableObject
     private readonly InverseDotGainTool _idgTool;
     private readonly DensitometerTool _densitometer;
     private readonly ColorMeasurementTool _colorMeasurement;
+    private readonly IPlateLoader _plateLoader;
     
     [ObservableProperty]
     private PrintJob? _currentJob;
@@ -57,6 +59,24 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private StochasticAnalysis? _stochasticAnalysis;
     
+    [ObservableProperty]
+    private double _loadProgress;
+
+    [ObservableProperty]
+    private bool _isLoading;
+
+    private CancellationTokenSource? _loadCts;
+
+    [RelayCommand]
+    private void CancelLoad()
+    {
+        if (!IsLoading)
+            return;
+
+        _loadCts?.Cancel();
+        StatusText = "Cancelling…";
+    }
+
     public ObservableCollectionEx<SeparationViewModel> Separations { get; } = new();
     public ObservableCollectionEx<string> RecentFiles { get; } = new();
     
@@ -66,7 +86,8 @@ public partial class MainViewModel : ObservableObject
         IColorEngine colorEngine,
         InverseDotGainTool idgTool,
         DensitometerTool densitometer,
-        ColorMeasurementTool colorMeasurement)
+        ColorMeasurementTool colorMeasurement,
+        IPlateLoader plateLoader)
     {
         _parserRegistry = parserRegistry;
         _fileDialogs = fileDialogs;
@@ -74,6 +95,7 @@ public partial class MainViewModel : ObservableObject
         _idgTool = idgTool;
         _densitometer = densitometer;
         _colorMeasurement = colorMeasurement;
+        _plateLoader = plateLoader;
         
         LoadRecentFiles();
     }
@@ -128,30 +150,71 @@ public partial class MainViewModel : ObservableObject
             ? Path.GetFileName(filePaths[0])
             : $"{filePaths.Count} files";
         
+        var warnings = new List<string>();
+
+        _loadCts?.Dispose();
+        _loadCts = new CancellationTokenSource();
+        var token = _loadCts.Token;
+        IsLoading = true;
+        LoadProgress = 0;
+
+        var progress = new Progress<PlateLoadProgress>(p =>
+        {
+            LoadProgress = p.Percent;
+            StatusText = $"{p.Stage}: {p.PlateName} ({p.Percent:0}%)";
+        });
+
         try
         {
             JobStatus = JobStatus.Loading;
             StatusText = $"Loading {displayName}...";
-            
+
             var job = filePaths.Count == 1
                 ? await _parserRegistry.ParseAsync(filePaths[0])
                 : await _parserRegistry.ParseMultipleAsync(filePaths);
             if (job.Separations.Count > 0)
                 ActiveSeparation = job.Separations[0].Color;
-            
-            // No pixel loader exists for these formats yet: list the plates, but there is no raster.
-            ShowJobWithoutRaster(job);
-            
-            JobStatus = JobStatus.Ready;
-            StatusText = $"Loaded: {job.Name} ({job.Separations.Count} separations, {job.Metadata.Width}x{job.Metadata.Height}). " +
-                         "Raster display for this format is not implemented yet - use File > Open Demo Job to try the viewer.";
-            
+
+            // Decode the actual plate rasters (TIFF strips / page-buffer payloads).
+            StatusText = $"Rasterising {job.Separations.Count} plate(s)...";
+            var plates = await _plateLoader.LoadAsync(job, warnings, progress, token);
+
+            if (plates.Count > 0)
+            {
+                ApplyJob(job, plates);
+                SetPreflight(PreflightAnalyzer.Run(job, plates));
+                JobStatus = JobStatus.Ready;
+                StatusText =
+                    $"Loaded: {job.Name} - {plates.Count} of {job.Separations.Count} plates, " +
+                    $"{job.Metadata.Width}x{job.Metadata.Height} px @ {job.Metadata.Resolution} dpi" +
+                    (warnings.Count > 0 ? $" ({warnings.Count} warning(s): {warnings[0]})" : string.Empty);
+            }
+            else
+            {
+                // Metadata parsed but nothing decodable: keep the plate list visible and say why.
+                ShowJobWithoutRaster(job);
+                JobStatus = JobStatus.Ready;
+                StatusText = warnings.Count > 0
+                    ? $"Loaded: {job.Name} - no raster: {warnings[0]}"
+                    : $"Loaded: {job.Name} ({job.Separations.Count} separations) - no raster data in this file.";
+            }
+
             AddToRecentFiles(filePaths[0]);
+        }
+        catch (OperationCanceledException)
+        {
+            JobStatus = JobStatus.Pending;
+            StatusText = $"Loading cancelled: {displayName}";
         }
         catch (Exception ex)
         {
             JobStatus = JobStatus.Error;
             StatusText = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            IsLoading = false;
+            LoadProgress = 0;
         }
     }
     

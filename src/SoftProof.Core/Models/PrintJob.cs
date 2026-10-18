@@ -91,7 +91,15 @@ public class Separation
     public string SpotColorName { get; set; } = string.Empty;
     public string SpotColorAlternateSpace { get; set; } = string.Empty;
     public float[]? SpotColorAlternateValues { get; set; }
-    
+
+    // Harlequin PBF raster data properties
+    public int DataOffset { get; set; }
+    public int DataSize { get; set; }
+    public byte[]? Data { get; set; }
+
+    /// <summary>Page index inside a multi-page TIFF (one page per plate); 0 otherwise.</summary>
+    public int PageIndex { get; set; }
+
     /// <summary>Screen angle in degrees as reported by the RIP (meaningful only if <see cref="ScreenLpi"/> &gt; 0).</summary>
     public float ScreenAngle { get; set; }
     

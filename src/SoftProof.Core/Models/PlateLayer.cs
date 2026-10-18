@@ -6,7 +6,8 @@ namespace SoftProof.Core.Models;
 /// </summary>
 public sealed class PlateLayer
 {
-    public PlateLayer(Separation separation, int width, int height, byte[] coverage, byte r, byte g, byte b)
+    public PlateLayer(Separation separation, int width, int height, byte[] coverage, byte r, byte g, byte b,
+                      PlatePyramid? pyramid = null)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Plate size must be positive.");
@@ -20,12 +21,19 @@ public sealed class PlateLayer
         R = r;
         G = g;
         B = b;
+        Pyramid = pyramid;
     }
     
     public Separation Separation { get; }
     public string Name => Separation.Name;
     public int Width { get; }
     public int Height { get; }
+
+    /// <summary>
+    /// Optional preview pyramid. Level 0 is <see cref="Coverage"/>; coarser levels let the
+    /// viewer draw zoomed-out views from far fewer pixels.
+    /// </summary>
+    public PlatePyramid? Pyramid { get; }
     
     /// <summary>Row-major 8-bit coverage, <see cref="Width"/> * <see cref="Height"/> bytes.</summary>
     public byte[] Coverage { get; }

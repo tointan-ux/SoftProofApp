@@ -3,6 +3,8 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
+using SoftProof.RIPParsers.Raster;
+using SoftProof.RIPParsers.Raster.Tiff;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Formats.Tiff;
@@ -18,6 +20,9 @@ public class OneBitTiffSeparationParser : IRipParser
     
     public RipFormat SupportedFormat => RipFormat.OneBitTiffSeparations;
     public string[] SupportedExtensions => new[] { ".tif", ".tiff" };
+
+    /// <summary>Standard process order, used when a multi-page plate file carries no page names.</summary>
+    private static readonly string[] ProcessOrder = { "Cyan", "Magenta", "Yellow", "Black" };
     
     public OneBitTiffSeparationParser(ILogger<OneBitTiffSeparationParser> logger)
     {
@@ -53,42 +58,83 @@ public class OneBitTiffSeparationParser : IRipParser
             Format = RipFormat.OneBitTiffSeparations
         };
         
-        var firstFile = true;
-        int separationIndex = 0;
+        var separationIndex = 0;
         
         foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            
-            using var image = await Image.LoadAsync<L8>(file, cancellationToken);
-            
-            if (firstFile)
+
+            // One TIFF can hold one page per plate (multi-page output is common from RIPs).
+            var pageCount = 1;
+            try
             {
-                job.Metadata.Width = image.Width;
-                job.Metadata.Height = image.Height;
-                job.Metadata.Resolution = 2400;
-                job.Metadata.BitDepth = 1;
-                job.Metadata.ColorSpace = ColorSpace.CMYK;
-                firstFile = false;
+                pageCount = TiffReader.PageCount(file);
             }
-            
-            var sepName = Path.GetFileNameWithoutExtension(file);
-            var separation = new Separation
+            catch (PbfFormatException)
             {
-                Name = sepName,
-                Index = separationIndex++,
-                FilePath = file,
-                Color = ParseSeparationColor(sepName),
-                IsSpotColor = IsSpotColorName(sepName)
-            };
-            
-            if (separation.IsSpotColor)
-            {
-                separation.SpotColorName = sepName;
+                pageCount = 1; // let the loader report the real decode error later
             }
-            
-            job.Separations.Add(separation);
-            job.Metadata.SeparationNames.Add(sepName);
+
+            var baseName = Path.GetFileNameWithoutExtension(file);
+            var pageNames = new List<string?>();
+            for (var page = 0; page < pageCount; page++)
+                pageNames.Add(pageCount > 1 ? TiffReader.ReadPageName(file, page) : null);
+
+            var useProcessOrder = pageCount is 3 or 4 && pageNames.All(string.IsNullOrWhiteSpace);
+
+            for (var page = 0; page < pageCount; page++)
+            {
+                string sepName;
+                if (pageCount == 1)
+                {
+                    // A colour token in the TIFF description or page name beats the filename.
+                    sepName = SeparationNaming.ResolveName(
+                        file,
+                        TiffReader.ReadDescription(file, page),
+                        TiffReader.ReadPageName(file, page));
+                }
+                else if (!string.IsNullOrWhiteSpace(pageNames[page]))
+                {
+                    sepName = pageNames[page]!;
+                }
+                else if (useProcessOrder)
+                {
+                    sepName = ProcessOrder[page];
+                }
+                else
+                {
+                    sepName = $"{baseName} p{page + 1}";
+                }
+
+                if (job.Metadata.Width == 0)
+                {
+                    // Header only: the plate itself is decoded later, possibly downsampled.
+                    var info = TiffReader.GetInfo(file, page);
+                    job.Metadata.Width = info.Width;
+                    job.Metadata.Height = info.Height;
+                    job.Metadata.Resolution = 2400;
+                    job.Metadata.BitDepth = info.BitsPerSample;
+                    job.Metadata.ColorSpace = info.Photometric == 5 ? ColorSpace.CMYK : ColorSpace.Gray;
+                }
+
+                var separation = new Separation
+                {
+                    Name = sepName,
+                    Index = separationIndex++,
+                    FilePath = file,
+                    PageIndex = page,
+                    Color = ParseSeparationColor(sepName),
+                    IsSpotColor = IsSpotColorName(sepName)
+                };
+
+                if (separation.IsSpotColor)
+                {
+                    separation.SpotColorName = sepName;
+                }
+
+                job.Separations.Add(separation);
+                job.Metadata.SeparationNames.Add(sepName);
+            }
         }
         
         job.Status = JobStatus.Ready;

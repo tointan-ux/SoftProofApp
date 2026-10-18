@@ -1,174 +1,214 @@
 using System.IO;
-using System.Text;
 using Microsoft.Extensions.Logging;
 using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Formats.Tiff;
+using SoftProof.RIPParsers.Raster;
+using SoftProof.RIPParsers.Raster.Pbf;
 
 namespace SoftProof.RIPParsers;
 
 /// <summary>
-/// Parser for Harlequin Page Buffer format (.pbuf, .hqn)
+/// Parser for Harlequin page buffers (.pbuf, .hqn, .hpb).
+/// <para>
+/// Reads the page size, resolution, separation table and the per-separation payload directory,
+/// then decodes each plate's packed raster (1-bit or 8-bit) into 8-bit ink coverage. Payloads
+/// may be stored raw, PackBits-RLE or LZW compressed, and each plate is addressed by its own
+/// offset/size, so plates no longer need to be contiguous in the file.
+/// </para>
+/// <para>
+/// Harlequin's native page buffer layout is proprietary and undocumented. This parser accepts
+/// the versioned SoftProof profile described on <see cref="PbfReader"/> (and the legacy
+/// header + name table + sequential raw planes layout) and rejects anything else with a
+/// diagnostic message instead of producing a blank page.
+/// </para>
 /// </summary>
 public class HarlequinPageBufferParser : IRipParser
 {
     private readonly ILogger<HarlequinPageBufferParser> _logger;
-    
+
+    /// <summary>
+    /// Plates up to this many pixels are decoded eagerly and cached on
+    /// <see cref="Separation.Data"/>. Larger plates stay on disk and are decoded by the plate
+    /// loader, which can decimate them to a preview size.
+    /// </summary>
+    public long MaxInlinePixels { get; init; } = 60_000_000;
+
     public RipFormat SupportedFormat => RipFormat.HarlequinPageBuffer;
     public string[] SupportedExtensions => new[] { ".pbuf", ".hqn", ".hpb" };
-    
+
     public HarlequinPageBufferParser(ILogger<HarlequinPageBufferParser> logger)
     {
         _logger = logger;
     }
-    
+
     public async Task<bool> CanParseAsync(string filePath, CancellationToken cancellationToken = default)
     {
         try
         {
-            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            var header = new byte[16];
-            await fs.ReadExactlyAsync(header, cancellationToken);
-            
-            // Check for Harlequin signature
-            var signature = Encoding.ASCII.GetString(header, 0, Math.Min(8, header.Length));
-            return signature.StartsWith("HQN") || signature.Contains("Harlequin");
+            await using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var head = new byte[(int)Math.Min(16, fs.Length)];
+            var read = await fs.ReadAsync(head.AsMemory(), cancellationToken);
+            return read >= 3 && PbfReader.HasPbfSignature(head.AsSpan(0, read));
         }
         catch
         {
             return false;
         }
     }
-    
-    public async Task<PrintJob> ParseAsync(string filePath, CancellationToken cancellationToken = default)
-    {
-        _logger.LogInformation("Parsing Harlequin Page Buffer: {File}", filePath);
-        
-        var job = new PrintJob
-        {
-            Name = Path.GetFileNameWithoutExtension(filePath),
-            FilePath = filePath,
-            Format = RipFormat.HarlequinPageBuffer
-        };
-        
-        using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        using var reader = new BinaryReader(fs, Encoding.ASCII, leaveOpen: false);
-        
-        // Read header
-        var header = await ParseHeaderAsync(reader, cancellationToken);
-        job.Metadata = header.Metadata;
-        job.Separations = header.Separations;
-        
-        // Read separation data
-        foreach (var sep in job.Separations)
-        {
-            sep.FilePath = filePath; // Embedded in same file
-            await LoadSeparationDataAsync(reader, sep, header, cancellationToken);
-        }
-        
-        job.Status = JobStatus.Ready;
-        _logger.LogInformation("Parsed job: {Name}, {Count} separations, {Width}x{Height}@{Resolution}dpi",
-            job.Name, job.Separations.Count, job.Metadata.Width, job.Metadata.Height, job.Metadata.Resolution);
-        
-        return job;
-    }
-    
-    public async Task<PrintJob> ParseMultipleAsync(IEnumerable<string> filePaths, CancellationToken cancellationToken = default)
+
+    public Task<PrintJob> ParseAsync(string filePath, CancellationToken cancellationToken = default) =>
+        ParseMultipleAsync(new[] { filePath }, cancellationToken);
+
+    public async Task<PrintJob> ParseMultipleAsync(IEnumerable<string> filePaths,
+                                                   CancellationToken cancellationToken = default)
     {
         var files = filePaths.ToList();
-        if (files.Count == 1)
-            return await ParseAsync(files[0], cancellationToken);
-        
-        // Multi-file Harlequin (rare)
+        if (files.Count == 0)
+            throw new ArgumentException("No files supplied.", nameof(filePaths));
+
         var job = new PrintJob
         {
             Name = Path.GetFileNameWithoutExtension(files[0]),
+            FilePath = files[0],
             Format = RipFormat.HarlequinPageBuffer
         };
-        
+
         foreach (var file in files)
         {
-            var singleJob = await ParseAsync(file, cancellationToken);
-            job.Separations.AddRange(singleJob.Separations);
-            if (job.Metadata.Width == 0)
-                job.Metadata = singleJob.Metadata;
+            cancellationToken.ThrowIfCancellationRequested();
+            await AppendFileAsync(job, file, cancellationToken);
         }
-        
-        job.Status = JobStatus.Ready;
+
+        job.Status = job.Separations.Count > 0 ? JobStatus.Ready : JobStatus.Error;
+
+        _logger.LogInformation(
+            "Parsed page buffer {Name}: {Count} separations, {Width}x{Height} @ {Resolution} dpi",
+            job.Name, job.Separations.Count, job.Metadata.Width, job.Metadata.Height,
+            job.Metadata.Resolution);
+
         return job;
     }
-    
-    private async Task<(JobMetadata Metadata, List<Separation> Separations)> ParseHeaderAsync(
-        BinaryReader reader, CancellationToken cancellationToken)
+
+    private async Task AppendFileAsync(PrintJob job, string filePath, CancellationToken cancellationToken)
     {
-        var metadata = new JobMetadata();
-        var separations = new List<Separation>();
-        
-        // Harlequin Page Buffer header structure (simplified)
-        // Real implementation would parse the full HQN PBF format
-        var magic = reader.ReadUInt32();
-        var version = reader.ReadUInt32();
-        
-        metadata.Width = reader.ReadInt32();
-        metadata.Height = reader.ReadInt32();
-        metadata.Resolution = reader.ReadInt32();
-        metadata.BitDepth = reader.ReadInt16();
-        var numSeparations = reader.ReadInt16();
-        metadata.ColorSpace = (ColorSpace)reader.ReadInt16();
-        
-        metadata.RipName = "Harlequin RIP";
-        metadata.RipVersion = $"v{version}";
-        
-        // Read separation names
-        for (int i = 0; i < numSeparations; i++)
+        _logger.LogInformation("Parsing Harlequin page buffer: {File}", filePath);
+
+        // Header + directory are tiny; decoding the plates is the expensive part.
+        var (header, entries) = await Task.Run(() => PbfReader.ReadDocument(filePath), cancellationToken);
+
+        if (job.Metadata.Width == 0)
         {
-            var nameLen = reader.ReadInt16();
-            var nameBytes = reader.ReadBytes(nameLen);
-            var sepName = Encoding.ASCII.GetString(nameBytes);
-            
+            job.Metadata.Width = header.Width;
+            job.Metadata.Height = header.Height;
+            job.Metadata.Resolution = header.Resolution;
+            job.Metadata.BitDepth = header.BitDepth;
+            job.Metadata.ColorSpace = MapColorSpace(header.ColorSpace, header.SeparationCount);
+            job.Metadata.RipName = "Harlequin RIP";
+            job.Metadata.RipVersion = $"page buffer v{header.Version}";
+        }
+        else if (job.Metadata.Width != header.Width || job.Metadata.Height != header.Height)
+        {
+            throw new PbfFormatException(
+                $"Page buffers in one job must share a page size: " +
+                $"{job.Metadata.Width}x{job.Metadata.Height} vs {header.Width}x{header.Height} " +
+                $"in '{Path.GetFileName(filePath)}'.");
+        }
+
+        var decodeInline = (long)header.Width * header.Height <= MaxInlinePixels;
+        var baseIndex = job.Separations.Count;
+
+        foreach (var entry in entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var name = string.IsNullOrWhiteSpace(entry.Name)
+                ? $"Separation_{entry.Index + 1}"
+                : entry.Name;
+
             var separation = new Separation
             {
-                Name = sepName,
-                Index = i,
-                Color = ParseSeparationColor(sepName)
+                Name = name,
+                Index = baseIndex + entry.Index,
+                FilePath = filePath,
+                DataOffset = checked((int)entry.DataOffset),
+                DataSize = entry.CompressedSize,
+                Color = SeparationColorResolver.FromName(name),
+                IsSpotColor = SeparationColorResolver.IsSpot(name)
             };
-            
-            separations.Add(separation);
-            metadata.SeparationNames.Add(sepName);
+
+            if (separation.IsSpotColor)
+                separation.SpotColorName = name;
+
+            if (decodeInline)
+            {
+                try
+                {
+                    separation.Data = await Task.Run(
+                        () => PbfReader.ReadPlate(filePath, header, entry), cancellationToken);
+                }
+                catch (PbfFormatException ex)
+                {
+                    // Keep the separation listed with its metadata; the plate loader retries and
+                    // the status bar reports why a plate could not be rasterised.
+                    _logger.LogWarning(ex, "Could not decode plate {Name} in {File}", name, filePath);
+                    separation.Data = null;
+                }
+            }
+
+            job.Separations.Add(separation);
+            job.Metadata.SeparationNames.Add(separation.Name);
         }
-        
-        return (metadata, separations);
     }
-    
-    private async Task LoadSeparationDataAsync(BinaryReader reader, Separation separation, 
-        (JobMetadata Metadata, List<Separation> Separations) header, CancellationToken cancellationToken)
+
+    private static ColorSpace MapColorSpace(int raw, int separationCount) => raw switch
     {
-        // In real implementation, seek to separation data offset and decode
-        // For now, create placeholder - actual data would be compressed (RLE, LZW, etc.)
-        var dataSize = header.Metadata.Width * header.Metadata.Height / 8; // 1-bit
-        separation.FilePath = $"memory://{separation.Name}";
-    }
-    
-    private SeparationColor ParseSeparationColor(string name)
-    {
-        var lower = name.ToLowerInvariant();
-        return lower switch
+        0 => ColorSpace.Gray,
+        1 => ColorSpace.RGB,
+        2 => ColorSpace.CMYK,
+        3 => ColorSpace.MultiChannel,
+        4 => ColorSpace.Lab,
+        5 => ColorSpace.DeviceN,
+        _ => separationCount switch
         {
-            "cyan" or "c" => SeparationColor.ProcessCyan,
-            "magenta" or "m" => SeparationColor.ProcessMagenta,
-            "yellow" or "y" => SeparationColor.ProcessYellow,
-            "black" or "k" => SeparationColor.ProcessBlack,
-            "orange" or "o" => SeparationColor.Orange,
-            "green" or "g" => SeparationColor.Green,
-            "violet" or "v" => SeparationColor.Violet,
-            "red" or "r" => SeparationColor.Red,
-            "blue" or "b" => SeparationColor.Blue,
-            "white" or "w" => SeparationColor.White,
-            "varnish" => SeparationColor.Varnish,
-            "primer" => SeparationColor.Primer,
-            _ => SeparationColor.SpotColor
-        };
+            1 => ColorSpace.Gray,
+            3 => ColorSpace.RGB,
+            4 => ColorSpace.CMYK,
+            _ => ColorSpace.MultiChannel
+        }
+    };
+}
+
+/// <summary>Maps plate names to <see cref="SeparationColor"/> (process inks plus common spots).</summary>
+internal static class SeparationColorResolver
+{
+    private static readonly string[] ProcessKeys =
+    {
+        "cyan", "magenta", "yellow", "black", "key",
+        "_c", "-c", "_m", "-m", "_y", "-y", "_k", "-k"
+    };
+
+    public static SeparationColor FromName(string name)
+    {
+        var lower = (name ?? string.Empty).ToLowerInvariant();
+
+        if (lower.Contains("cyan") || lower.EndsWith("_c") || lower.EndsWith("-c")) return SeparationColor.ProcessCyan;
+        if (lower.Contains("magenta") || lower.EndsWith("_m") || lower.EndsWith("-m")) return SeparationColor.ProcessMagenta;
+        if (lower.Contains("yellow") || lower.EndsWith("_y") || lower.EndsWith("-y")) return SeparationColor.ProcessYellow;
+        if (lower.Contains("black") || lower.Contains("key") || lower.EndsWith("_k") || lower.EndsWith("-k")) return SeparationColor.ProcessBlack;
+        if (lower.Contains("orange")) return SeparationColor.Orange;
+        if (lower.Contains("green")) return SeparationColor.Green;
+        if (lower.Contains("violet") || lower.Contains("purple")) return SeparationColor.Violet;
+        if (lower.Contains("red")) return SeparationColor.Red;
+        if (lower.Contains("blue")) return SeparationColor.Blue;
+        if (lower.Contains("white")) return SeparationColor.White;
+        if (lower.Contains("varnish") || lower.Contains("coating")) return SeparationColor.Varnish;
+        if (lower.Contains("primer")) return SeparationColor.Primer;
+        return SeparationColor.SpotColor;
+    }
+
+    public static bool IsSpot(string name)
+    {
+        var lower = (name ?? string.Empty).ToLowerInvariant();
+        return !ProcessKeys.Any(lower.Contains);
     }
 }

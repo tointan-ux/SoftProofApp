@@ -57,6 +57,13 @@ public class PlateViewer : FrameworkElement
     private int _height;
     private WriteableBitmap? _bitmap;
     private byte[]? _buffer;
+
+    // Level being rendered: level 0 is the plate's base coverage; coarser levels are drawn for
+    // zoomed-out views so compositing works on far fewer pixels.
+    private int _levelIndex;
+    private int _renderWidth;
+    private int _renderHeight;
+    private bool _switchingLevel;
     
     private Matrix _view = Matrix.Identity;
     private bool _fitPending;
@@ -154,10 +161,11 @@ public class PlateViewer : FrameworkElement
         _plates = plates;
         _width = width;
         _height = height;
-        _buffer = new byte[checked(width * height * 4)];
-        _bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+        _levelIndex = 0;
         _caliperStart = _caliperEnd = null;
-        
+
+        EnsureLevelBitmap();
+
         Recomposite();
         
         if (ActualWidth > 0 && ActualHeight > 0)
@@ -172,8 +180,75 @@ public class PlateViewer : FrameworkElement
         _width = _height = 0;
         _bitmap = null;
         _buffer = null;
+        _levelIndex = 0;
+        _renderWidth = _renderHeight = 0;
         _caliperStart = _caliperEnd = null;
         InvalidateVisual();
+    }
+
+    /// <summary>Level currently rendered (0 = the plate's full decoded coverage).</summary>
+    public int LevelIndex => _levelIndex;
+
+    /// <summary>Width in pixels of the level being drawn (base width at level 0).</summary>
+    public int RenderWidth => _renderWidth;
+
+    private int MaxLevelIndex
+    {
+        get
+        {
+            if (_plates.Count == 0)
+                return 0;
+
+            var levels = _plates.Min(p => p.Pyramid?.Levels.Count ?? 1) - 1;
+            return Math.Max(0, levels);
+        }
+    }
+
+    private static PyramidLevel? LevelOf(PlateLayer plate, int index) =>
+        plate.Pyramid is { } pyramid && index >= 0 && index < pyramid.Levels.Count
+            ? pyramid.Levels[index]
+            : null;
+
+    /// <summary>Chooses the level for the current zoom and rebuilds the bitmap if it changed.</summary>
+    private void ApplyZoomLevel(bool force)
+    {
+        if (_switchingLevel || _width == 0)
+            return;
+
+        var pyramid = _plates.Select(p => p.Pyramid).FirstOrDefault(p => p is not null);
+        var desired = Math.Clamp(pyramid?.IndexForZoom(Zoom) ?? 0, 0, MaxLevelIndex);
+
+        if (!force && desired == _levelIndex)
+            return;
+
+        _switchingLevel = true;
+        try
+        {
+            _levelIndex = desired;
+            EnsureLevelBitmap();
+            Recomposite();
+        }
+        finally
+        {
+            _switchingLevel = false;
+        }
+    }
+
+    private void EnsureLevelBitmap()
+    {
+        var level = _plates.Select(p => LevelOf(p, _levelIndex)).FirstOrDefault(l => l is not null);
+        _renderWidth = level?.Width ?? _width;
+        _renderHeight = level?.Height ?? _height;
+
+        if (_renderWidth <= 0 || _renderHeight <= 0)
+        {
+            _bitmap = null;
+            _buffer = null;
+            return;
+        }
+
+        _buffer = new byte[checked(_renderWidth * _renderHeight * 4)];
+        _bitmap = new WriteableBitmap(_renderWidth, _renderHeight, 96, 96, PixelFormats.Bgra32, null);
     }
     
     /// <summary>Re-composite after plate flags (visible / solo / inverted) changed.</summary>
@@ -197,7 +272,7 @@ public class PlateViewer : FrameworkElement
     
     private void Recomposite()
     {
-        if (_bitmap == null || _buffer == null)
+        if (_bitmap == null || _buffer == null || _renderWidth <= 0 || _renderHeight <= 0)
         {
             InvalidateVisual();
             return;
@@ -212,7 +287,7 @@ public class PlateViewer : FrameworkElement
         var kb = new float[n];
         for (var i = 0; i < n; i++)
         {
-            coverage[i] = layers[i].Coverage;
+            coverage[i] = LevelOf(layers[i], _levelIndex)?.Coverage ?? layers[i].Coverage;
             inverted[i] = layers[i].Inverted;
             // How strongly this ink absorbs each channel at full coverage.
             kr[i] = 1f - layers[i].R / 255f;
@@ -222,9 +297,9 @@ public class PlateViewer : FrameworkElement
         
         var film = _viewMode == PlateViewMode.FilmBlackWhite;
         var buffer = _buffer;
-        var w = _width;
+        var w = _renderWidth;
         
-        Parallel.For(0, _height, y =>
+        Parallel.For(0, _renderHeight, y =>
         {
             var rowStart = y * w;
             for (var x = 0; x < w; x++)
@@ -259,7 +334,8 @@ public class PlateViewer : FrameworkElement
             }
         });
         
-        _bitmap.WritePixels(new Int32Rect(0, 0, _width, _height), buffer, _width * 4, 0);
+        _bitmap.WritePixels(new Int32Rect(0, 0, _renderWidth, _renderHeight), buffer,
+                            _renderWidth * 4, 0);
         InvalidateVisual();
     }
     
@@ -304,6 +380,11 @@ public class PlateViewer : FrameworkElement
         // Nearest-neighbour when magnified so individual pixels stay crisp.
         RenderOptions.SetBitmapScalingMode(this,
             Zoom >= 2.0 ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.Linear);
+
+        // Zoomed out far enough that a coarser pyramid level covers more than a screen pixel?
+        // Switch to it, so panning composites a fraction of the pixels.
+        ApplyZoomLevel(force: false);
+
         InvalidateVisual();
         ViewChanged?.Invoke(this, EventArgs.Empty);
     }
