@@ -197,10 +197,10 @@ public sealed class PlateLoader : IPlateLoader
                                                                "decoded", 100, false));
                     }
 
+                    // Keep the job at its native resolution: the decoded raster is smaller, but
+                    // the plate is still a 2400 dpi plate. The viewer derives the view DPI from
+                    // the pyramid factor, so nothing has to rewrite the job metadata per plate.
                     var resolution = Math.Max(1, job.Metadata.Resolution / factor);
-                    job.Metadata.Width = width;
-                    job.Metadata.Height = height;
-                    job.Metadata.Resolution = resolution;
 
                     warnings?.Add(
                         $"Plate '{separation.Name}' is {info.Width}x{info.Height} px; decoded " +
@@ -290,7 +290,7 @@ public sealed class PlateLoader : IPlateLoader
 
         var factor = 1;
         while ((long)(width / factor) * (height / factor) > MaxPixelsPerPlate)
-            factor++;
+            factor <<= 1;
 
         if (factor > 1)
         {
@@ -303,16 +303,9 @@ public sealed class PlateLoader : IPlateLoader
                 resolution = Math.Max(1, resolution / factor);
 
             warnings?.Add(
-                $"Plate '{separation.Name}' decimated {factor}x to {width}x{height} px " +
-                $"({resolution} dpi) to stay within the {MaxPixelsPerPlate:N0} pixel budget.");
-        }
-
-        // The viewer and status bar read page size from the job; make it match what we decoded.
-        if (factor > 1)
-        {
-            job.Metadata.Width = width;
-            job.Metadata.Height = height;
-            job.Metadata.Resolution = resolution;
+                $"Plate '{separation.Name}': overview at 1/{factor} ({width}x{height} px, {resolution} dpi) " +
+                $"to stay within the {MaxPixelsPerPlate:N0} pixel budget. Native pixels are streamed " +
+                "from the plate strips at 100% and beyond.");
         }
 
         var (r, g, b) = Palette(separation);

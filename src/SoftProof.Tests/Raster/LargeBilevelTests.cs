@@ -23,6 +23,7 @@ public class LargeBilevelTests
             Fixture("large_bilevel_lzw.tif"), pageIndex: 0, maxPixels: 2_000_000,
             out var width, out var height, out var factor);
 
+        // Decimation is a power of two (24 Mpx / 2 Mpx budget -> 4), so pyramid levels are 2x steps.
         Assert.Equal(4, factor);
         Assert.Equal(1500, width);
         Assert.Equal(1000, height);

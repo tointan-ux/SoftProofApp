@@ -4,6 +4,15 @@ namespace SoftProof.Core.Models;
 /// Raster data for one plate (separation), stored as 8-bit ink coverage (0 = no ink, 255 = solid).
 /// Also carries the per-plate display state (visible / solo / inverted) used by the viewer.
 /// </summary>
+/// <summary>Ink bounding box in plate pixels.</summary>
+public readonly record struct PixelBounds(int X, int Y, int Width, int Height)
+{
+    public static readonly PixelBounds Empty = new(0, 0, 0, 0);
+
+    public bool IsEmpty => Width <= 0 || Height <= 0;
+    public long Area => (long)Width * Height;
+}
+
 public sealed class PlateLayer
 {
     public PlateLayer(Separation separation, int width, int height, byte[] coverage, byte r, byte g, byte b,
@@ -39,9 +48,17 @@ public sealed class PlateLayer
     public byte[] Coverage { get; }
     
     /// <summary>Ink colour used to display this plate (sRGB).</summary>
-    public byte R { get; }
-    public byte G { get; }
-    public byte B { get; }
+    public byte R { get; private set; }
+    public byte G { get; private set; }
+    public byte B { get; private set; }
+
+    /// <summary>Override the ink colour used when compositing this plate.</summary>
+    public void SetDisplayColor(byte r, byte g, byte b)
+    {
+        R = r;
+        G = g;
+        B = b;
+    }
     
     public bool Visible { get; set; } = true;
     public bool Solo { get; set; }
@@ -49,23 +66,66 @@ public sealed class PlateLayer
     
     /// <summary>Average ink coverage over the whole plate, in percent. Call <see cref="ComputeStats"/> first.</summary>
     public double InkedAreaPercent { get; private set; }
+
+    /// <summary>Bounding box of all inked pixels; <see cref="PixelBounds.Empty"/> for a blank plate.</summary>
+    public PixelBounds InkBounds { get; private set; } = PixelBounds.Empty;
+
+    /// <summary>Share of pixels carrying any ink at all, in percent (0.01 = one in ten thousand).</summary>
+    public double InkedPixelPercent { get; private set; }
     
     public void ComputeStats()
     {
         long total = 0;
-        var data = Coverage;
-        var w = Width;
-        Parallel.For(0, Height, () => 0L, (y, _, local) =>
-        {
-            var start = y * w;
-            for (var x = 0; x < w; x++)
-                local += data[start + x];
-            return local;
-        }, local => Interlocked.Add(ref total, local));
-        
+        long inkedPixels = 0;
+        var minX = int.MaxValue;
+        var minY = int.MaxValue;
+        var maxX = -1;
+        var maxY = -1;
+        var gate = new object();
+
+        Parallel.For(0, Height,
+            () => (sum: 0L, inked: 0L, minX: int.MaxValue, minY: int.MaxValue, maxX: -1, maxY: -1),
+            (y, _, local) =>
+            {
+                var start = y * Width;
+                for (var x = 0; x < Width; x++)
+                {
+                    var value = Coverage[start + x];
+                    local.sum += value;
+                    if (value == 0)
+                        continue;
+
+                    local.inked++;
+                    if (x < local.minX) local.minX = x;
+                    if (x > local.maxX) local.maxX = x;
+                    if (y < local.minY) local.minY = y;
+                    if (y > local.maxY) local.maxY = y;
+                }
+
+                return local;
+            },
+            local =>
+            {
+                lock (gate)
+                {
+                    total += local.sum;
+                    inkedPixels += local.inked;
+
+                    if (local.maxX < 0)
+                        return;
+
+                    if (local.minX < minX) minX = local.minX;
+                    if (local.maxX > maxX) maxX = local.maxX;
+                    if (local.minY < minY) minY = local.minY;
+                    if (local.maxY > maxY) maxY = local.maxY;
+                }
+            });
+
         InkedAreaPercent = total * 100.0 / (255.0 * Width * Height);
+        InkedPixelPercent = inkedPixels * 100.0 / ((long)Width * Height);
+        InkBounds = maxX < 0 ? PixelBounds.Empty : new PixelBounds(minX, minY, maxX - minX + 1, maxY - minY + 1);
     }
-    
+
     /// <summary>
     /// Mean plate coverage (percent) in a square aperture centred on pixel (cx, cy).
     /// Pixels outside the plate are ignored; returns 0 if the aperture is entirely outside.

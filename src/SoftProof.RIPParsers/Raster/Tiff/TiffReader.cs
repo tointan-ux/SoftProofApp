@@ -232,7 +232,7 @@ public static class TiffReader
 
         factor = 1;
         while ((long)CeilDiv(width, factor) * CeilDiv(height, factor) > maxPixels)
-            factor++;
+            factor <<= 1;
 
         outWidth = CeilDiv(width, factor);
         outHeight = CeilDiv(height, factor);
@@ -370,7 +370,7 @@ public static class TiffReader
 
         factor = 1;
         while ((long)CeilDiv(width, factor) * CeilDiv(height, factor) > maxPixels)
-            factor++;
+            factor <<= 1;
 
         outWidth = CeilDiv(width, factor);
         outHeight = CeilDiv(height, factor);
@@ -466,6 +466,7 @@ public static class TiffReader
         private readonly bool _inkIsBlack;
         private readonly long[] _rowSums;
         private readonly byte[] _coverage;
+        private readonly int[] _transitions;
         private int _rowsInBlock;
 
         public BilevelAccumulator(int width, int height, int factor, int outWidth, int outHeight,
@@ -479,15 +480,18 @@ public static class TiffReader
             _inkIsBlack = inkIsBlack;
             _rowSums = new long[outWidth];
             _coverage = new byte[(long)outWidth * outHeight];
+            _transitions = new int[width + 2];
         }
 
         public byte[] Coverage => _coverage;
 
         public void AddTransitions(int y, int[] transitions, int count)
+            => AddTransitions(y, transitions, count, _inkIsBlack ? 1 : 0);
+
+        private void AddTransitions(int y, int[] transitions, int count, int inkColor)
         {
             var position = 0;
             var color = 0;
-            var inkColor = _inkIsBlack ? 1 : 0;
 
             for (var i = 0; i <= count; i++)
             {
@@ -504,34 +508,10 @@ public static class TiffReader
 
         public void AddPackedRow(int y, ReadOnlySpan<byte> row)
         {
-            var x = 0;
-            for (var i = 0; i < row.Length && x < _width; i++, x += 8)
-            {
-                var count = Math.Min(8, _width - x);
-                var value = row[i];
-
-                // Whole-byte fast paths: real plates are mostly solid runs.
-                if (value == 0)
-                {
-                    if (!_inkIsBlack)
-                        AddSpan(_rowSums, x, x + count, _factor, _width);
-                    continue;
-                }
-
-                if (value == 0xFF)
-                {
-                    if (_inkIsBlack)
-                        AddSpan(_rowSums, x, x + count, _factor, _width);
-                    continue;
-                }
-
-                var bits = _inkIsBlack ? value : (byte)~value;
-                for (var bit = 0; bit < count; bit++)
-                    if (((bits >> (7 - bit)) & 1) != 0)
-                        AddSpan(_rowSums, x + bit, x + bit + 1, _factor, _width);
-            }
-
-            CompleteRow(y);
+            // Word-at-a-time run extraction: boundaries are bits that differ from their neighbour,
+            // so one XOR per 64 pixels replaces a per-bit loop.
+            var count = PackedRowRuns.ToTransitions(row, _width, _transitions, invert: !_inkIsBlack);
+            AddTransitions(y, _transitions, count, inkColor: 1);
         }
 
         private void CompleteRow(int y)
@@ -557,6 +537,102 @@ public static class TiffReader
         }
 
         public void Finish() { }
+    }
+
+    /// <summary>
+    /// Decodes one rectangle of a 1-bit page at native resolution (no decimation). Used by the
+    /// viewer's "original pixels" layer: only the visible region is materialised.
+    /// </summary>
+    public static byte[] ReadBilevelRegion(string path, int pageIndex, int x, int y, int width, int height,
+                                           CancellationToken cancellationToken = default)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var (littleEndian, firstIfd) = ReadTiffHeader(bytes);
+        var tags = ReadIfdAt(bytes, firstIfd, pageIndex, littleEndian)
+                   ?? throw new PbfFormatException($"TIFF has no page {pageIndex}.");
+
+        var pageWidth = (int)First(tags, TagImageWidth, 0);
+        var pageHeight = (int)First(tags, TagImageLength, 0);
+        var bits = (int)First(tags, TagBitsPerSample, 1);
+        var samples = (int)First(tags, TagSamplesPerPixel, 1);
+        var compression = (int)First(tags, TagCompression, 1);
+        var photometric = (int)First(tags, TagPhotometric, 1);
+
+        if (bits != 1 || samples != 1)
+            throw new PbfFormatException("Native-region decode supports 1-bit single-sample plates only.");
+        if (compression is not (1 or 4 or 5 or 32773))
+            throw new PbfFormatException(
+                $"TIFF compression {CompressionName(compression)} is not supported for region decode.");
+
+        var x0 = Math.Clamp(x, 0, pageWidth);
+        var y0 = Math.Clamp(y, 0, pageHeight);
+        var x1 = Math.Clamp(x + width, x0, pageWidth);
+        var y1 = Math.Clamp(y + height, y0, pageHeight);
+
+        var regionWidth = Math.Max(0, x1 - x0);
+        var regionHeight = Math.Max(0, y1 - y0);
+        var region = new byte[(long)regionWidth * regionHeight];
+        if (regionWidth == 0 || regionHeight == 0)
+            return region;
+
+        var inkIsBlack = photometric == 0; // photometric 1: ink is where the sample is clear
+
+        if (compression == 4)
+        {
+            DecodeG4Rows(bytes, tags, pageWidth, pageHeight, (rowY, transitions, count) =>
+            {
+                if (rowY < y0 || rowY >= y1)
+                    return;
+
+                if ((rowY & 63) == 0)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                var row = (long)(rowY - y0) * regionWidth;
+                var position = 0;
+                var colour = 0;
+
+                for (var i = 0; i <= count; i++)
+                {
+                    var end = i < count ? transitions[i] : pageWidth;
+                    if (colour == (inkIsBlack ? 1 : 0))
+                        CopyBits(region, row, position, end, x0, x1);
+
+                    position = end;
+                    colour ^= 1;
+                }
+            });
+        }
+        else
+        {
+            DecodeStripRows(bytes, tags, pageWidth, pageHeight, compression, (rowY, row) =>
+            {
+                if (rowY < y0 || rowY >= y1)
+                    return;
+
+                if ((rowY & 63) == 0)
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                var target = (long)(rowY - y0) * regionWidth;
+                for (var px = x0; px < x1; px++)
+                {
+                    var byteIndex = px >> 3;
+                    var bit = (row[byteIndex] >> (7 - (px & 7))) & 1;
+                    var ink = inkIsBlack ? bit == 1 : bit == 0;
+                    region[target + (px - x0)] = ink ? (byte)255 : (byte)0;
+                }
+            });
+        }
+
+        return region;
+    }
+
+    /// <summary>Marks [start,end) inside [x0,x1) as solid ink in a region row.</summary>
+    private static void CopyBits(byte[] region, long rowOffset, int start, int end, int x0, int x1)
+    {
+        var from = Math.Max(start, x0);
+        var to = Math.Min(end, x1);
+        for (var px = from; px < to; px++)
+            region[rowOffset + (px - x0)] = 255;
     }
 
     private static void AddSpan(long[] accumulator, int start, int end, int factor, int width)

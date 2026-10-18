@@ -26,6 +26,21 @@ public enum PlateViewMode
     Progressive
 }
 
+public sealed class RectangleMeasuredEventArgs : EventArgs
+{
+    public RectangleMeasuredEventArgs(Rect bounds, bool completed)
+    {
+        Bounds = bounds;
+        Completed = completed;
+    }
+
+    /// <summary>Measured rectangle in plate pixels, normalised to positive width/height.</summary>
+    public Rect Bounds { get; }
+
+    /// <summary>True when the drag has finished.</summary>
+    public bool Completed { get; }
+}
+
 public sealed class CaliperEventArgs : EventArgs
 {
     public CaliperEventArgs(Point start, Point end, bool completed)
@@ -49,8 +64,8 @@ public sealed class CaliperEventArgs : EventArgs
 /// </summary>
 public class PlateViewer : FrameworkElement
 {
-    private const double MinZoom = 0.02;
-    private const double MaxZoom = 64.0;
+    private const double MinZoom = 0.01;
+    private const double MaxZoom = 512.0;
     
     private IReadOnlyList<PlateLayer> _plates = Array.Empty<PlateLayer>();
     private int _width;
@@ -64,6 +79,26 @@ public class PlateViewer : FrameworkElement
     private int _renderWidth;
     private int _renderHeight;
     private bool _switchingLevel;
+
+    // Native (full-resolution) detail layer, supplied by the host when the user zooms past the
+    // coarse level. The viewer only knows about a bitmap and the image rectangle it covers.
+    private int _nativeFactor = 1;
+    private WriteableBitmap? _detailBitmap;
+    private Rect _detailRect = Rect.Empty;
+    private bool _refining;
+
+    // Content-box overlay: plate centre cross, content box, margin dimensions and offset.
+    private Rect _contentBounds = Rect.Empty;
+    private bool _showContentOverlay;
+
+    // Simulation and orientation.
+    private readonly PlateOrientation _orientation = new();
+    private bool _blackOverprint = true;
+    private bool _simulateMetallicPaper;
+    private double _backSideOpacity;
+
+    /// <summary>Raised when the visible region needs native-resolution pixels.</summary>
+    public event EventHandler<Rect>? DetailRequested;
     
     private Matrix _view = Matrix.Identity;
     private bool _fitPending;
@@ -72,6 +107,8 @@ public class PlateViewer : FrameworkElement
     private Point _panLast;
     
     private bool _measuring;
+    private bool _measureRectangleMode;
+    private bool _measureRectangle;
     private Point? _caliperStart;
     private Point? _caliperEnd;
     
@@ -93,6 +130,9 @@ public class PlateViewer : FrameworkElement
     public event EventHandler<Point?>? CursorMoved;
     /// <summary>Raised while a caliper measurement is dragged and when it completes.</summary>
     public event EventHandler<CaliperEventArgs>? CaliperChanged;
+
+    /// <summary>Raised instead of <see cref="CaliperChanged"/> while rectangle measurement is on.</summary>
+    public event EventHandler<RectangleMeasuredEventArgs>? RectangleChanged;
     
     public int ImageWidth => _width;
     public int ImageHeight => _height;
@@ -108,6 +148,18 @@ public class PlateViewer : FrameworkElement
     
     /// <summary>Densitometer aperture in image pixels (1, 3 or 5).</summary>
     public int ApertureSize { get; set; } = 1;
+
+    /// <summary>When true, the Measure tool drags a rectangle and reports width × height / area.</summary>
+    public bool RectangleMeasure
+    {
+        get => _measureRectangleMode;
+        set
+        {
+            if (_measureRectangleMode == value) return;
+            _measureRectangleMode = value;
+            InvalidateVisual();
+        }
+    }
     
     public ViewerTool Tool
     {
@@ -163,6 +215,9 @@ public class PlateViewer : FrameworkElement
         _height = height;
         _levelIndex = 0;
         _caliperStart = _caliperEnd = null;
+        _nativeFactor = Math.Max(1, plates.Select(p => p.Pyramid?.Base.Factor ?? 1).DefaultIfEmpty(1).Max());
+        _detailBitmap = null;
+        _detailRect = Rect.Empty;
 
         EnsureLevelBitmap();
 
@@ -295,7 +350,22 @@ public class PlateViewer : FrameworkElement
             kb[i] = 1f - layers[i].B / 255f;
         }
         
+        var isBlack = new bool[n];
+        var isWhite = new bool[n];
+        for (var i = 0; i < n; i++)
+        {
+            isBlack[i] = layers[i].Separation.Color == SeparationColor.ProcessBlack;
+            isWhite[i] = layers[i].Separation.Color == SeparationColor.White ||
+                         layers[i].Name.Contains("white", StringComparison.OrdinalIgnoreCase);
+        }
+
         var film = _viewMode == PlateViewMode.FilmBlackWhite;
+        var knockout = !_blackOverprint;
+        var metallic = _simulateMetallicPaper;
+        var paperR = metallic ? 0.80f : 1f;
+        var paperG = metallic ? 0.79f : 1f;
+        var paperB = metallic ? 0.74f : 1f;
+
         var buffer = _buffer;
         var w = _renderWidth;
         
@@ -305,14 +375,41 @@ public class PlateViewer : FrameworkElement
             for (var x = 0; x < w; x++)
             {
                 var idx = rowStart + x;
-                float r = 1f, g = 1f, b = 1f;
-                
+                float r = paperR, g = paperG, b = paperB;
+
+                // Knockout needs the black coverage before CMY is applied; overprint does not.
+                var kCover = 0f;
+                if (knockout)
+                {
+                    for (var i = 0; i < n; i++)
+                    {
+                        if (!isBlack[i]) continue;
+                        var kc = coverage[i][idx] * (1f / 255f);
+                        if (inverted[i]) kc = 1f - kc;
+                        if (kc > kCover) kCover = kc;
+                    }
+                }
+
                 for (var i = 0; i < n; i++)
                 {
                     var c = coverage[i][idx] * (1f / 255f);
                     if (inverted[i]) c = 1f - c;
                     if (c <= 0f) continue;
-                    
+
+                    if (isWhite[i])
+                    {
+                        // White ink is opaque: it hides whatever is underneath (metallic stock included).
+                        r += (1f - r) * c;
+                        g += (1f - g) * c;
+                        b += (1f - b) * c;
+                        continue;
+                    }
+
+                    if (knockout && !isBlack[i])
+                        c *= 1f - kCover;
+
+                    if (c <= 0f) continue;
+
                     if (film)
                     {
                         var t = 1f - c;
@@ -345,21 +442,26 @@ public class PlateViewer : FrameworkElement
     
     public Point ScreenToImage(Point screen)
     {
+        if (_width <= 0 || _height <= 0)
+            return screen;
+
         var inv = _view;
         inv.Invert();
-        return inv.Transform(screen);
+        return _orientation.InverseMatrix(_width, _height).Transform(inv.Transform(screen));
     }
-    
-    public Point ImageToScreen(Point image) => _view.Transform(image);
+
+    public Point ImageToScreen(Point image) =>
+        _view.Transform(_orientation.GetMatrix(_width, _height).Transform(image));
     
     public void FitToView()
     {
         if (_width == 0 || ActualWidth <= 0 || ActualHeight <= 0) return;
         
-        var scale = Math.Min(ActualWidth / _width, ActualHeight / _height) * 0.95;
+        var oriented = _orientation.OrientedSize(_width, _height);
+        var scale = Math.Min(ActualWidth / oriented.Width, ActualHeight / oriented.Height) * 0.95;
         _view = new Matrix(scale, 0, 0, scale,
-            (ActualWidth - _width * scale) / 2,
-            (ActualHeight - _height * scale) / 2);
+            (ActualWidth - oriented.Width * scale) / 2,
+            (ActualHeight - oriented.Height * scale) / 2);
         _fitPending = false;
         NotifyViewChanged();
     }
@@ -374,16 +476,249 @@ public class PlateViewer : FrameworkElement
         _view.ScaleAt(factor, factor, a.X, a.Y);
         NotifyViewChanged();
     }
+
+    /// <summary>Plate decimation of the base level (1 = the base is native resolution).</summary>
+    public int NativeFactor => _nativeFactor;
+
+    /// <summary>Zoom relative to native pixels: 1.0 = one plate pixel per screen pixel.</summary>
+    public double NativeZoom => Zoom / Math.Max(1, _nativeFactor);
+
+    /// <summary>True while native pixels are being decoded for the current view.</summary>
+    public bool IsRefining
+    {
+        get => _refining;
+        set
+        {
+            if (_refining == value) return;
+            _refining = value;
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>Index into the stored pyramid levels (0 = finest stored preview level).</summary>
+    public int CurrentLevelIndex => _levelIndex;
+
+    /// <summary>Decimation of the level currently drawn, relative to native pixels.</summary>
+    public int CurrentLevelFactor => Math.Max(1, _nativeFactor) << Math.Max(0, _levelIndex);
+
+    /// <summary>True when native-resolution pixels are covering the viewport.</summary>
+    public bool ShowsNativePixels =>
+        _detailBitmap is not null && !_detailRect.IsEmpty && _detailRect.Contains(VisibleImageRect);
+
+    /// <summary>Set the zoom relative to native pixels (1.0 = 100% of the plate).</summary>
+    public void SetNativeZoom(double nativeZoom) =>
+        SetZoom(nativeZoom * Math.Max(1, _nativeFactor));
+
+    /// <summary>Rotate/flip state; zoom and pan stay a separate pure-scale matrix.</summary>
+    public PlateOrientation Orientation => _orientation;
+
+    /// <summary>
+    /// True keeps process inks under black (overprint). False knocks the underlying inks out
+    /// where black is solid — the difference a trap actually has to survive.
+    /// </summary>
+    public bool BlackOverprint
+    {
+        get => _blackOverprint;
+        set
+        {
+            if (_blackOverprint == value) return;
+            _blackOverprint = value;
+            Recomposite();
+        }
+    }
+
+    /// <summary>Metallic stock: dull silver paper, with white ink printed opaquely on top.</summary>
+    public bool SimulateMetallicPaper
+    {
+        get => _simulateMetallicPaper;
+        set
+        {
+            if (_simulateMetallicPaper == value) return;
+            _simulateMetallicPaper = value;
+            Recomposite();
+        }
+    }
+
+    /// <summary>0 = front only, 1 = mirrored back side fully replacing the front.</summary>
+    public double BackSideOpacity
+    {
+        get => _backSideOpacity;
+        set
+        {
+            var clamped = Math.Clamp(value, 0, 1);
+            if (Math.Abs(_backSideOpacity - clamped) < 0.001) return;
+            _backSideOpacity = clamped;
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>Native detail cannot honour the simulation modes yet; hide it rather than lie.</summary>
+    public bool SimulationActive => !_blackOverprint || _simulateMetallicPaper;
+
+    public string OrientationLabel => _orientation.Label();
+
+    public void RotateClockwise()
+    {
+        _orientation.RotateClockwise();
+        AfterOrientationChange();
+    }
+
+    public void SetRotation(int degrees)
+    {
+        _orientation.SetRotation(degrees);
+        AfterOrientationChange();
+    }
+
+    public void ToggleFlipHorizontal()
+    {
+        _orientation.ToggleFlipHorizontal();
+        AfterOrientationChange();
+    }
+
+    public void ToggleFlipVertical()
+    {
+        _orientation.ToggleFlipVertical();
+        AfterOrientationChange();
+    }
+
+    public void ResetOrientation()
+    {
+        _orientation.Reset();
+        AfterOrientationChange();
+    }
+
+    private void AfterOrientationChange()
+    {
+        if (_width > 0 && ActualWidth > 0 && ActualHeight > 0)
+            FitToView();
+        else
+            InvalidateVisual();
+    }
+
+    /// <summary>Zoom and centre on an image rectangle (preflight click-to-focus).</summary>
+    public void FocusOn(Rect imageRect, double fill = 0.8)
+    {
+        if (_width == 0 || imageRect.IsEmpty || imageRect.Width <= 0 || imageRect.Height <= 0)
+            return;
+
+        var scale = Math.Min(ActualWidth / imageRect.Width, ActualHeight / imageRect.Height) * fill;
+        scale = Math.Clamp(scale, MinZoom, MaxZoom);
+
+        SetViewCenter(imageRect.X + imageRect.Width / 2,
+                      imageRect.Y + imageRect.Height / 2, scale);
+    }
+
+    /// <summary>Draw the content-box / margin / offset overlay.</summary>
+    public bool ShowContentOverlay
+    {
+        get => _showContentOverlay;
+        set
+        {
+            if (_showContentOverlay == value) return;
+            _showContentOverlay = value;
+            InvalidateVisual();
+        }
+    }
+
+    /// <summary>Content box in image pixels (union of plate ink bounds).</summary>
+    public void SetContentBounds(Rect boundsInImagePixels)
+    {
+        _contentBounds = boundsInImagePixels;
+        InvalidateVisual();
+    }
+
+    /// <summary>Supply the native-resolution detail for an image rectangle (null clears it).</summary>
+    public void SetDetail(BitmapSource? bitmap, Rect imageRect)
+    {
+        _detailBitmap = bitmap is null ? null : new WriteableBitmap(bitmap);
+        _detailRect = bitmap is null ? Rect.Empty : imageRect;
+        _refining = false;
+        InvalidateVisual();
+    }
+
+    /// <summary>Ask for native pixels when the view is close to, or past, 1:1.</summary>
+    private void MaybeRequestDetail()
+    {
+        if (_width == 0 || _nativeFactor <= 1)
+            return;
+
+        if (NativeZoom < 0.75)
+        {
+            _refining = false;
+            if (_detailBitmap is not null)
+            {
+                _detailBitmap = null;
+                _detailRect = Rect.Empty;
+            }
+            return;
+        }
+
+        var visible = VisibleImageRect;
+        if (visible.IsEmpty || (_detailBitmap is not null && _detailRect.Contains(visible)))
+            return;
+
+        // Decode a margin around the viewport so a small pan does not immediately re-decode.
+        var marginX = visible.Width * 0.25;
+        var marginY = visible.Height * 0.25;
+        var region = new Rect(visible.X - marginX, visible.Y - marginY,
+                              visible.Width + marginX * 2, visible.Height + marginY * 2);
+        region.Intersect(new Rect(0, 0, _width, _height));
+
+        if (region.Width < 1 || region.Height < 1)
+            return;
+
+        IsRefining = true;
+        DetailRequested?.Invoke(this, region);
+    }
+
+    /// <summary>Visible part of the page in image pixels; empty when nothing is loaded.</summary>
+    public Rect VisibleImageRect
+    {
+        get
+        {
+            if (_width == 0 || ActualWidth <= 0 || ActualHeight <= 0)
+                return Rect.Empty;
+
+            var rect = new Rect(ScreenToImage(new Point(0, 0)),
+                                ScreenToImage(new Point(ActualWidth, ActualHeight)));
+            rect.Intersect(new Rect(0, 0, _width, _height));
+            return rect;
+        }
+    }
+
+    /// <summary>Pan so an image point sits at the centre of the viewport (optionally setting zoom).</summary>
+    public void SetViewCenter(double imageX, double imageY, double? zoom = null)
+    {
+        if (_width == 0)
+            return;
+
+        var scale = Math.Clamp(zoom ?? Zoom, MinZoom, MaxZoom);
+        var oriented = _orientation.GetMatrix(_width, _height).Transform(new Point(imageX, imageY));
+        _view = new Matrix(scale, 0, 0, scale,
+            ActualWidth / 2 - oriented.X * scale,
+            ActualHeight / 2 - oriented.Y * scale);
+        NotifyViewChanged();
+    }
+
+    /// <summary>Image-space centre of the viewport and the current zoom (for session restore).</summary>
+    public (double CenterX, double CenterY, double Zoom) GetViewState()
+    {
+        var centre = ScreenToImage(new Point(ActualWidth / 2, ActualHeight / 2));
+        return (centre.X, centre.Y, Zoom);
+    }
     
     private void NotifyViewChanged()
     {
         // Nearest-neighbour when magnified so individual pixels stay crisp.
+        // Crisp squares only when the pixels being drawn are the plate's own; a coarse level
+        // enlarged with nearest-neighbour would just look like stair-stepped mush.
         RenderOptions.SetBitmapScalingMode(this,
-            Zoom >= 2.0 ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.Linear);
+            ShowsNativePixels || Zoom >= 4.0 ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.Linear);
 
         // Zoomed out far enough that a coarser pyramid level covers more than a screen pixel?
         // Switch to it, so panning composites a fraction of the pixels.
         ApplyZoomLevel(force: false);
+        MaybeRequestDetail();
 
         InvalidateVisual();
         ViewChanged?.Invoke(this, EventArgs.Empty);
@@ -433,9 +768,10 @@ public class PlateViewer : FrameworkElement
         else if (e.ChangedButton == MouseButton.Left && _tool == ViewerTool.Measure)
         {
             _measuring = true;
+            _measureRectangle = RectangleMeasure || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
             _caliperStart = _caliperEnd = ScreenToImage(pos);
             CaptureMouse();
-            RaiseCaliper(false);
+            RaiseMeasurement(false);
             InvalidateVisual();
             e.Handled = true;
         }
@@ -456,7 +792,7 @@ public class PlateViewer : FrameworkElement
         else if (_measuring)
         {
             _caliperEnd = ScreenToImage(pos);
-            RaiseCaliper(false);
+            RaiseMeasurement(false);
             InvalidateVisual();
         }
         else if (_tool == ViewerTool.Densitometer)
@@ -476,7 +812,7 @@ public class PlateViewer : FrameworkElement
         {
             _measuring = false;
             _caliperEnd = ScreenToImage(e.GetPosition(this));
-            RaiseCaliper(true);
+            RaiseMeasurement(true);
             InvalidateVisual();
         }
         
@@ -492,10 +828,22 @@ public class PlateViewer : FrameworkElement
         InvalidateVisual();
     }
     
-    private void RaiseCaliper(bool completed)
+    private void RaiseMeasurement(bool completed)
     {
-        if (_caliperStart is { } s && _caliperEnd is { } en)
-            CaliperChanged?.Invoke(this, new CaliperEventArgs(s, en, completed));
+        if (_caliperStart is not { } s || _caliperEnd is not { } en)
+            return;
+
+        if (_measureRectangle)
+        {
+            var rect = new Rect(
+                new Point(Math.Min(s.X, en.X), Math.Min(s.Y, en.Y)),
+                new Point(Math.Max(s.X, en.X), Math.Max(s.Y, en.Y)));
+
+            RectangleChanged?.Invoke(this, new RectangleMeasuredEventArgs(rect, completed));
+            return;
+        }
+
+        CaliperChanged?.Invoke(this, new CaliperEventArgs(s, en, completed));
     }
     
     // ------------------------------------------------------------------------------------------
@@ -511,9 +859,38 @@ public class PlateViewer : FrameworkElement
         
         if (_bitmap == null) return;
         
-        dc.PushTransform(new MatrixTransform(_view));
+        var drawMatrix = _orientation.GetMatrix(_width, _height);
+        drawMatrix.Append(_view);
+
+        dc.PushTransform(new MatrixTransform(drawMatrix));
         dc.DrawImage(_bitmap, new Rect(0, 0, _width, _height));
+        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive && _viewMode != PlateViewMode.Progressive)
+            dc.DrawImage(_detailBitmap, _detailRect);
+
+        // Back side mirrored over the front: the classic registration/bleed-through check.
+        if (_backSideOpacity > 0.001)
+        {
+            // The back side mirrors along the axis the user is flipping: left/right, top/bottom,
+            // or both. This keeps the bleed-through check aligned with the flip switch.
+            var backMatrix = (_orientation.FlipHorizontal, _orientation.FlipVertical) switch
+            {
+                (true, true) => new Matrix(-1, 0, 0, -1, _width, _height),
+                (false, true) => new Matrix(1, 0, 0, -1, 0, _height),
+                _ => new Matrix(-1, 0, 0, 1, _width, 0)
+            };
+
+            dc.PushOpacity(_backSideOpacity);
+            dc.PushTransform(new MatrixTransform(backMatrix));
+            dc.DrawImage(_bitmap, new Rect(0, 0, _width, _height));
+            dc.Pop();
+            dc.Pop();
+        }
+
         dc.Pop();
+
+        DrawContentOverlay(dc);
+        DrawResolutionBadge(dc);
+        DrawOrientationBadge(dc);
         
         // Page border
         var topLeft = ImageToScreen(new Point(0, 0));
@@ -525,6 +902,153 @@ public class PlateViewer : FrameworkElement
         DrawCaliper(dc);
     }
     
+    private void DrawOrientationBadge(DrawingContext dc)
+    {
+        if (_bitmap is null || _orientation.IsIdentity)
+            return;
+
+        var formatted = new FormattedText("View: " + _orientation.Label(),
+            System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface("Segoe UI"), 11, Brushes.White,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+        var origin = new Point(Math.Max(10, ActualWidth - formatted.Width - 16), 10);
+        var background = new SolidColorBrush(Color.FromArgb(210, 15, 21, 32));
+        background.Freeze();
+        dc.DrawRoundedRectangle(background, new Pen(new SolidColorBrush(Color.FromRgb(70, 82, 106)), 1),
+            new Rect(origin.X - 6, origin.Y - 3, formatted.Width + 12, formatted.Height + 6), 4, 4);
+        dc.DrawText(formatted, origin);
+    }
+
+    private void DrawContentOverlay(DrawingContext dc)
+    {
+        if (!_showContentOverlay || _bitmap is null || _contentBounds.IsEmpty || PixelsPerMm <= 0)
+            return;
+
+        if (ContentBoxOverlay.Compute(_contentBounds, _width, _height, PixelsPerMm) is not { } layout)
+            return;
+
+        var accent = new SolidColorBrush(Color.FromRgb(255, 190, 60));
+        accent.Freeze();
+        var dimColour = new SolidColorBrush(Color.FromRgb(150, 190, 255));
+        dimColour.Freeze();
+
+        var boxPen = new Pen(accent, 1.2) { DashStyle = DashStyles.Dash };
+        boxPen.Freeze();
+        var dimPen = new Pen(dimColour, 1.0);
+        dimPen.Freeze();
+
+        var topLeft = ToScreen(new Point(_contentBounds.Left, _contentBounds.Top));
+        var bottomRight = ToScreen(new Point(_contentBounds.Right, _contentBounds.Bottom));
+        var box = new Rect(topLeft, bottomRight);
+        dc.DrawRectangle(null, boxPen, box);
+
+        // Plate centre cross, and a smaller cross for the content centre.
+        var plateCentre = ToScreen(new Point(_width / 2.0, _height / 2.0));
+        DrawCross(dc, plateCentre, 10, accent, 1.6);
+
+        var contentCentreImage = new Point(_contentBounds.Left + _contentBounds.Width / 2,
+                                           _contentBounds.Top + _contentBounds.Height / 2);
+        var contentCentre = ToScreen(contentCentreImage);
+        DrawCross(dc, contentCentre, 5, dimColour, 1.0);
+
+        // Four margin dimensions, placed along the middle of the content box.
+        var midY = contentCentreImage.Y;
+        var midX = contentCentreImage.X;
+
+        DrawDimension(dc, dimPen,
+            ToScreen(new Point(0, midY)), ToScreen(new Point(_contentBounds.Left, midY)),
+            $"L {layout.LeftMm:0.0} mm");
+        DrawDimension(dc, dimPen,
+            ToScreen(new Point(_contentBounds.Right, midY)), ToScreen(new Point(_width, midY)),
+            $"R {layout.RightMm:0.0} mm");
+        DrawDimension(dc, dimPen,
+            ToScreen(new Point(midX, 0)), ToScreen(new Point(midX, _contentBounds.Top)),
+            $"T {layout.TopMm:0.0} mm");
+        DrawDimension(dc, dimPen,
+            ToScreen(new Point(midX, _contentBounds.Bottom)), ToScreen(new Point(midX, _height)),
+            $"B {layout.BottomMm:0.0} mm");
+
+        // Centre-to-centre offset.
+        var offsetLine = plateCentre - contentCentre;
+        if (offsetLine.Length >= 6)
+        {
+            var offsetPen = new Pen(accent, 1.0) { DashStyle = DashStyles.Dot };
+            offsetPen.Freeze();
+            dc.DrawLine(offsetPen, plateCentre, contentCentre);
+            DrawLabel(dc, layout.OffsetText, new Point((plateCentre.X + contentCentre.X) / 2,
+                                                       (plateCentre.Y + contentCentre.Y) / 2));
+        }
+    }
+
+    private Point ToScreen(Point imagePoint) => ImageToScreen(imagePoint);
+
+    private static void DrawCross(DrawingContext dc, Point centre, double arm, Brush brush, double thickness)
+    {
+        var pen = new Pen(brush, thickness);
+        pen.Freeze();
+        dc.DrawLine(pen, new Point(centre.X - arm, centre.Y), new Point(centre.X + arm, centre.Y));
+        dc.DrawLine(pen, new Point(centre.X, centre.Y - arm), new Point(centre.X, centre.Y + arm));
+    }
+
+    /// <summary>Dimension line with end ticks and a centred millimetre label.</summary>
+    private void DrawDimension(DrawingContext dc, Pen pen, Point from, Point to, string text)
+    {
+        var delta = to - from;
+        if (delta.Length < 8)
+            return; // margin too small to read; the label would cover the artwork
+
+        dc.DrawLine(pen, from, to);
+
+        var tick = Math.Abs(delta.X) > Math.Abs(delta.Y) ? new Vector(0, 4) : new Vector(4, 0);
+        dc.DrawLine(pen, from - tick, from + tick);
+        dc.DrawLine(pen, to - tick, to + tick);
+
+        DrawLabel(dc, text, new Point((from.X + to.X) / 2, (from.Y + to.Y) / 2));
+    }
+
+    private void DrawLabel(DrawingContext dc, string text, Point centre)
+    {
+        var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight, new Typeface("Segoe UI"), 10, Brushes.White,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+        var origin = new Point(centre.X - formatted.Width / 2, centre.Y - formatted.Height / 2);
+        var background = new SolidColorBrush(Color.FromArgb(225, 20, 26, 38));
+        background.Freeze();
+        dc.DrawRoundedRectangle(background, null,
+            new Rect(origin.X - 4, origin.Y - 1, formatted.Width + 8, formatted.Height + 2), 3, 3);
+        dc.DrawText(formatted, origin);
+    }
+
+    private void DrawResolutionBadge(DrawingContext dc)
+    {
+        if (_bitmap is null)
+            return;
+
+        string text;
+        if (_refining && NativeZoom >= 0.75)
+            text = "Refining…";
+        else if (ShowsNativePixels)
+            text = "Native pixels";
+        else if (CurrentLevelFactor > 1)
+            text = $"Overview 1/{CurrentLevelFactor}";
+        else
+            text = "Native pixels";
+
+        var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11, Brushes.White,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+        // Badges live in the top-right lane; the X/Y/zoom readout owns the bottom-left lane.
+        var top = _orientation.IsIdentity ? 10 : 32;
+        var origin = new Point(Math.Max(10, ActualWidth - formatted.Width - 16), top);
+        var background = new SolidColorBrush(Color.FromArgb(210, 15, 21, 32));
+        dc.DrawRoundedRectangle(background, new Pen(new SolidColorBrush(Color.FromRgb(70, 82, 106)), 1),
+            new Rect(origin.X - 6, origin.Y - 3, formatted.Width + 12, formatted.Height + 6), 4, 4);
+        dc.DrawText(formatted, origin);
+    }
+
     private void DrawDensitometerMarker(DrawingContext dc)
     {
         if (_tool != ViewerTool.Densitometer || _cursorScreen is not { } c) return;
@@ -545,7 +1069,29 @@ public class PlateViewer : FrameworkElement
         var b = ImageToScreen(e);
         var gold = new SolidColorBrush(Color.FromRgb(245, 180, 0));
         var pen = new Pen(gold, 1.5);
-        
+
+        if (_measureRectangle)
+        {
+            var box = new Rect(a, b);
+            var fill = new SolidColorBrush(Color.FromArgb(28, 245, 180, 0));
+            dc.DrawRectangle(fill, pen, box);
+            dc.DrawEllipse(gold, null, box.TopLeft, 3, 3);
+            dc.DrawEllipse(gold, null, box.BottomRight, 3, 3);
+
+            var wMm = Math.Abs(e.X - s.X) / Math.Max(PixelsPerMm, 0.0001);
+            var hMm = Math.Abs(e.Y - s.Y) / Math.Max(PixelsPerMm, 0.0001);
+            var boxText = new FormattedText($"{wMm:0.00} × {hMm:0.00} mm",
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 12, Brushes.White,
+                VisualTreeHelper.GetDpi(this).PixelsPerDip);
+
+            var label = new Point(box.Left + 8, box.Top - boxText.Height - 8);
+            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(220, 15, 21, 32)), null,
+                new Rect(label.X - 4, label.Y - 2, boxText.Width + 8, boxText.Height + 4), 3, 3);
+            dc.DrawText(boxText, label);
+            return;
+        }
+
         dc.DrawLine(pen, a, b);
         dc.DrawEllipse(gold, null, a, 3, 3);
         dc.DrawEllipse(gold, null, b, 3, 3);

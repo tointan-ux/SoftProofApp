@@ -13,6 +13,13 @@
         PreviewKeyDown="Window_PreviewKeyDown"
         DataContext="{Binding Main, Source={StaticResource Locator}}">
 
+    <Window.InputBindings>
+        <KeyBinding Key="F5" Command="{Binding ReloadJobCommand}" />
+        <KeyBinding Key="OemComma" Modifiers="Ctrl" Command="{Binding OpenPreferencesCommand}" />
+        <KeyBinding Key="Escape" Command="{Binding ExitCompareCommand}" />
+        <KeyBinding Key="W" Modifiers="Ctrl" Command="{Binding CloseJobCommand}" />
+    </Window.InputBindings>
+
     <Window.CommandBindings>
         <CommandBinding Command="ApplicationCommands.Open" Executed="OpenCommand_Executed" />
     </Window.CommandBindings>
@@ -32,18 +39,39 @@
                 <Menu DockPanel.Dock="Left" Style="{StaticResource MaterialDesignMenu}"
                       Background="Transparent" VerticalAlignment="Center">
                     <MenuItem Header="_File">
-                        <MenuItem Header="_Open..." Command="ApplicationCommands.Open" />
+                        <MenuItem Header="_Open..." Command="ApplicationCommands.Open" InputGestureText="Ctrl+O" />
+                        <MenuItem Header="Open _Folder..." Command="{Binding OpenFolderCommand}" />
+                        <MenuItem Header="_Watch Folder..." Command="{Binding WatchFolderCommand}" />
+                        <MenuItem Header="_Reload" Command="{Binding ReloadJobCommand}" InputGestureText="F5" />
+                        <MenuItem Header="Close _Job" Command="{Binding CloseJobCommand}" InputGestureText="Ctrl+W" />
+                        <Separator />
                         <MenuItem Header="Open _Demo Job" Command="{Binding OpenDemoJobCommand}" />
                         <MenuItem Header="_Recent Files" ItemsSource="{Binding RecentFiles}">
                             <MenuItem.ItemContainerStyle>
                                 <Style TargetType="MenuItem" BasedOn="{StaticResource MaterialDesignMenuItem}">
-                                    <Setter Property="Header" Value="{Binding}" />
+                                    <Setter Property="Header" Value="{Binding DisplayName}" />
+                                    <Setter Property="ToolTip" Value="{Binding Path}" />
+                                    <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
                                     <EventSetter Event="Click" Handler="RecentFile_Click" />
+                                    <Setter Property="ContextMenu">
+                                        <Setter.Value>
+                                            <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                                <MenuItem Header="Pin / unpin" Click="RecentPin_Click"
+                                                          ToolTip="Pinned entries stay at the top and are not trimmed" />
+                                            </ContextMenu>
+                                        </Setter.Value>
+                                    </Setter>
                                 </Style>
                             </MenuItem.ItemContainerStyle>
                         </MenuItem>
+                        <MenuItem Header="Clear _Recent List" Command="{Binding ClearRecentCommand}" />
                         <Separator />
-                        <MenuItem Header="_Sign-Off" Command="{Binding SignOffCommand}" />
+                        <MenuItem Header="Export _Report..." Command="{Binding ExportReportCommand}" />
+                        <MenuItem Header="_Preferences..." Command="{Binding OpenPreferencesCommand}" InputGestureText="Ctrl+," />
+                        <Separator />
+                        <MenuItem Header="_Sign-Off" Command="{Binding SignOffCommand}"
+                                  ToolTip="Requires a loaded job and a completed preflight with no failing checks."
+                                  ToolTipService.ShowOnDisabled="True" />
                         <Separator />
                         <MenuItem Header="E_xit" Click="Exit_Click" />
                     </MenuItem>
@@ -53,6 +81,8 @@
                         <MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}" InputGestureText="Ctrl++" />
                         <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}" InputGestureText="Ctrl+-" />
                         <MenuItem Header="Zoom to _Dots (1600%)" Command="{Binding ZoomToDotsCommand}" />
+                        <Separator />
+                        <MenuItem Header="Side-by-side _Compare" Command="{Binding ToggleCompareCommand}" />
                     </MenuItem>
                     <MenuItem Header="S_eparations">
                         <MenuItem Header="_All On" Command="{Binding ShowAllPlatesCommand}" />
@@ -82,8 +112,13 @@
                             Visibility="{Binding IsSignedOff, Converter={StaticResource BoolToVisibilityConverter}}">
                         <TextBlock Text="SIGNED OFF" FontSize="10" FontWeight="Bold" Foreground="White" />
                     </Border>
-                    <TextBlock Text="Press: " Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding PressText}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock Text="Profile: " Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                    <ComboBox x:Name="PressProfileBox" Width="190" Height="24" FontSize="11" Margin="0,0,4,0"
+                              ItemsSource="{Binding PressProfiles}" SelectedItem="{Binding SelectedPressProfile, Mode=TwoWay}"
+                              DisplayMemberPath="Name" IsEditable="True"
+                              Text="{Binding PressProfileName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              KeyDown="PressProfileBox_KeyDown"
+                              ToolTip="Press profile. Pick one, or type a new name and press Enter to save the current thresholds under it." />
                     <TextBlock Text="Resolution: " Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="18,0,0,0" />
                     <TextBlock Text="{Binding ResolutionText}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
                 </StackPanel>
@@ -101,6 +136,16 @@
                             <TextBlock Text="Open" Margin="6,0,0,0" />
                         </StackPanel>
                     </Button>
+
+                    <Border Width="1" Height="20" Margin="6,0" Background="{StaticResource SpBorder}" />
+
+                    <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowPreflightPane}"
+                                  ToolTip="Show / hide the preflight pane">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ClipboardTextOutline" Width="16" Height="16" />
+                            <TextBlock Text="Preflight" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </ToggleButton>
 
                     <Border Width="1" Height="20" Margin="6,0" Background="{StaticResource SpBorder}" />
 
@@ -163,45 +208,67 @@
                     <Button Style="{StaticResource SpToolButton}" Command="{Binding ZoomInCommand}" ToolTip="Zoom in">
                         <materialDesign:PackIcon Kind="MagnifyPlus" Width="16" Height="16" />
                     </Button>
-                    <Button Command="{Binding ZoomToDotsCommand}" Margin="6,0,0,0" ToolTip="Zoom to 1600% to inspect individual pixels">
-                        <Button.Style>
-                            <Style TargetType="Button" BasedOn="{StaticResource SpToolButton}">
-                                <Setter Property="Foreground" Value="{StaticResource SpWarning}" />
-                                <Setter Property="Template">
-                                    <Setter.Value>
-                                        <ControlTemplate TargetType="Button">
-                                            <Border x:Name="Bd" CornerRadius="6" Padding="10,5" BorderThickness="1"
-                                                    BorderBrush="{StaticResource SpWarning}" Background="Transparent">
-                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                            <ControlTemplate.Triggers>
-                                                <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="{StaticResource SpHover}" />
-                                                </Trigger>
-                                            </ControlTemplate.Triggers>
-                                        </ControlTemplate>
-                                    </Setter.Value>
-                                </Setter>
-                            </Style>
-                        </Button.Style>
-                        <TextBlock Text="Dots (1600%)" FontWeight="SemiBold" />
-                    </Button>
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowDieline}"
-                                  ToolTip="Show / hide technical (dieline) plates">
+                    <ToggleButton x:Name="CaliperToggle" Style="{StaticResource SpToolToggle}"
+                                  ToolTip="Precision caliper — click for instructions and reading">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Layers" Width="16" Height="16" />
-                            <TextBlock Text="Dieline" Margin="6,0,0,0" />
+                            <materialDesign:PackIcon Kind="RulerSquare" Width="16" Height="16" />
+                            <TextBlock Text="Caliper" Margin="6,0,0,0" />
                         </StackPanel>
                     </ToggleButton>
+                    <Popup x:Name="CaliperPopup" PlacementTarget="{Binding ElementName=CaliperToggle}"
+                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True"
+                           IsOpen="{Binding IsChecked, ElementName=CaliperToggle, Mode=TwoWay}">
+                        <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
+                                BorderThickness="1" CornerRadius="8" Padding="12" MaxWidth="360">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,8">
+                                    <TextBlock DockPanel.Dock="Right" Text="KEY M" FontSize="10"
+                                               Style="{StaticResource SpMuted}" />
+                                    <TextBlock Text="PRECISION CALIPER (MM)" FontSize="10" FontWeight="Bold"
+                                               Foreground="{StaticResource SpWarning}" />
+                                </DockPanel>
+                                <TextBlock Text="Choose Measure (or press M), then click and drag. Rectangle mode (or Shift-drag) reports width × height, area and perimeter."
+                                           FontSize="11" Style="{StaticResource SpMuted}" TextWrapping="Wrap" />
+                                <ToggleButton Content="Rectangle (2D)" IsChecked="{Binding RectangleMeasure}"
+                                              Margin="0,8,0,0" HorizontalAlignment="Left" Padding="8,3" FontSize="11"
+                                              ToolTip="Drag a rectangle instead of a line; hold Shift for a one-off rectangle" />
+                                <StackPanel Margin="0,8,0,0"
+                                            Visibility="{Binding HasCaliper, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <TextBlock Text="{Binding CaliperText}" FontFamily="Consolas" FontSize="22"
+                                               FontWeight="SemiBold" Foreground="{StaticResource SpWarning}" />
+                                    <TextBlock Text="{Binding CaliperDetail}" FontFamily="Consolas"
+                                               Style="{StaticResource SpMuted}" Margin="0,3,0,0" />
+                                </StackPanel>
+                                <Button Content="Select Measure tool" Margin="0,10,0,0" Padding="8,3"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding SetToolCommand}" CommandParameter="{x:Static viewer:ViewerTool.Measure}" />
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                    <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowOriginalPixels}"
+                                  ToolTip="Zoom to 100% of the plate and stream native pixels">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="MagnifyPlus" Width="16" Height="16" />
+                            <TextBlock Text="1:1 native" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowContentOverlay}"
+                                  ToolTip="Plate centre, content box, margin dimensions and offset (mm)">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Crosshairs" Width="16" Height="16" />
+                            <TextBlock Text="Centre" Margin="6,0,0,0" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <Border Width="1" Height="20" Margin="6,0" Background="{StaticResource SpBorder}" />
                     <Button Style="{StaticResource SpToolButton}" Click="Refresh_Click" ToolTip="Re-composite plates">
                         <materialDesign:PackIcon Kind="Refresh" Width="16" Height="16" />
                     </Button>
                     <Border Width="1" Height="20" Margin="6,0" Background="{StaticResource SpBorder}" />
                     <Button Style="{StaticResource SpPrimaryButton}" Command="{Binding SignOffCommand}"
-                            ToolTip="Approve this job (blocked if preflight has failures)">
+                            ToolTip="{Binding SignOffBlockReason}">
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="CheckDecagram" Width="16" Height="16" />
                             <TextBlock Text="Sign-Off" Margin="6,0,0,0" />
@@ -214,15 +281,32 @@
         <!-- ================= Workspace ================= -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" />
+                <ColumnDefinition x:Name="LeftPanelColumn" Width="300" />
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="340" />
             </Grid.ColumnDefinitions>
 
             <!-- Left: Inspection & Caliper -->
-            <Border Grid.Column="0" Background="{StaticResource SpPanelBg}"
+            <Border x:Name="LeftPanelBorder" Grid.Column="0" Background="{StaticResource SpPanelBg}"
                     BorderBrush="{StaticResource SpBorder}" BorderThickness="0,0,1,0">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <DockPanel LastChildFill="True">
+                    <Border DockPanel.Dock="Top" Background="{StaticResource SpCardBg}"
+                            BorderBrush="{StaticResource SpBorder}" BorderThickness="0,0,0,1" Padding="12,10">
+                        <DockPanel LastChildFill="False">
+                            <Button DockPanel.Dock="Right" Content="◀" Style="{StaticResource SpChipButton}"
+                                    Command="{Binding TogglePreflightPaneCommand}" Margin="8,0,0,0"
+                                    VerticalAlignment="Center" ToolTip="Collapse the preflight pane" />
+                            <Button DockPanel.Dock="Right" Content="Run preflight" Style="{StaticResource SpChipButton}"
+                                    Command="{Binding RunPreflightCommand}" VerticalAlignment="Center" />
+                            <StackPanel>
+                                <TextBlock Text="PREFLIGHT PLATE CHECK" FontSize="10" FontWeight="Bold"
+                                           Style="{StaticResource SpMuted}" />
+                                <TextBlock Text="{Binding PreflightSummary}" FontSize="11" Margin="0,2,0,0"
+                                           Foreground="{StaticResource SpAccentText}" />
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="12">
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                             <materialDesign:PackIcon Kind="RulerSquare" Width="18" Height="18"
@@ -230,41 +314,9 @@
                             <TextBlock Text="Inspection &amp; Caliper" Style="{StaticResource SpPanelTitle}" Margin="8,0,0,0" />
                         </StackPanel>
 
-                        <!-- Caliper card -->
-                        <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
-                                BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,16">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,8">
-                                    <TextBlock DockPanel.Dock="Right" Text="KEY M" FontSize="10" Style="{StaticResource SpMuted}" />
-                                    <TextBlock Text="PRECISION CALIPER (MM)" FontSize="10" FontWeight="Bold"
-                                               Foreground="{StaticResource SpWarning}" />
-                                </DockPanel>
-                                <TextBlock Text="Choose Measure (or press M), then click and drag across the plate to measure traps, margins and bleed in millimetres."
-                                           FontStyle="Italic">
-                                    <TextBlock.Style>
-                                        <Style TargetType="TextBlock" BasedOn="{StaticResource SpMuted}">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding HasCaliper}" Value="True">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </TextBlock.Style>
-                                </TextBlock>
-                                <StackPanel Visibility="{Binding HasCaliper, Converter={StaticResource BoolToVisibilityConverter}}">
-                                    <TextBlock Text="{Binding CaliperText}" FontFamily="Consolas" FontSize="24" FontWeight="SemiBold"
-                                               Foreground="{StaticResource SpWarning}" />
-                                    <TextBlock Text="{Binding CaliperDetail}" FontFamily="Consolas" Style="{StaticResource SpMuted}" Margin="0,4,0,0" />
-                                </StackPanel>
-                            </StackPanel>
-                        </Border>
-
-                        <!-- Preflight -->
-                        <TextBlock Text="PREFLIGHT PLATE CHECK" FontSize="10" FontWeight="Bold" Style="{StaticResource SpMuted}" />
-                        <TextBlock Text="{Binding PreflightSummary}" FontSize="11" Margin="0,2,0,8"
-                                   Foreground="{StaticResource SpAccentText}" />
-
-                        <ItemsControl ItemsSource="{Binding PreflightChecks}">
+                        <!-- Preflight results (failures and warnings first) -->
+                        <ItemsControl ItemsSource="{Binding PreflightIssues}"
+                                          MouseLeftButtonUp="PreflightList_MouseLeftButtonUp">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
@@ -306,10 +358,13 @@
                             </ItemsControl.ItemTemplate>
                         </ItemsControl>
 
-                        <Button Content="Run preflight" Style="{StaticResource SpChipButton}" HorizontalAlignment="Left"
-                                Command="{Binding RunPreflightCommand}" Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding PreflightPassedSummary}" Style="{StaticResource SpMuted}"
+                                   FontSize="11" Margin="2,4,0,0"
+                                   Visibility="{Binding HasPreflightPasses, Converter={StaticResource BoolToVisibilityConverter}}" />
+
                     </StackPanel>
-                </ScrollViewer>
+                    </ScrollViewer>
+                </DockPanel>
             </Border>
 
             <!-- Centre: rulers + viewer + densitometer -->
@@ -339,111 +394,225 @@
                                     Background="{StaticResource SpPanelBg}" Foreground="{StaticResource SpTextMuted}" />
 
                     <Grid Grid.Row="1" Grid.Column="1" ClipToBounds="True">
-                        <viewer:PlateViewer x:Name="Viewer" />
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
 
-                        <!-- Empty state -->
-                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <StackPanel.Style>
-                                <Style TargetType="StackPanel">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding HasRaster}" Value="False">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </StackPanel.Style>
-                            <TextBlock Text="Open a RIP job to begin (Ctrl+O)" FontSize="16"
-                                       Foreground="{StaticResource SpTextMuted}" HorizontalAlignment="Center" />
-                            <TextBlock Text="Raster loading for real RIP files is not implemented yet."
-                                       Style="{StaticResource SpMuted}" HorizontalAlignment="Center" Margin="0,6,0,12" />
-                            <Button Content="Open demo job" Style="{StaticResource SpChipButton}" HorizontalAlignment="Center"
-                                    Command="{Binding OpenDemoJobCommand}" />
-                        </StackPanel>
+                        <!-- Docked compare bar -->
+                        <Border x:Name="CompareBar" Grid.Row="0" Visibility="Collapsed"
+                                Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
+                                BorderThickness="0,0,0,1" Padding="8,6">
+                            <StackPanel>
+                                <DockPanel LastChildFill="False">
+                                    <Button DockPanel.Dock="Right" Content="Exit compare (Esc)"
+                                            Command="{Binding ExitCompareCommand}" Margin="10,0,0,0"
+                                            Padding="8,2" FontSize="11" />
 
-                        <!-- Cursor readout -->
-                        <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12"
-                                Background="#CC0B101A" BorderBrush="{StaticResource SpBorder}" BorderThickness="1"
-                                CornerRadius="6" Padding="12,6" IsHitTestVisible="False"
-                                Visibility="{Binding HasRaster, Converter={StaticResource BoolToVisibilityConverter}}">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="X:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
-                                <TextBlock Text="{Binding CursorXText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
-                                <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
-                                <TextBlock Text="Y:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <TextBlock Text="{Binding CursorYText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
-                                <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
-                                <TextBlock Text="Zoom:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <TextBlock Text="{Binding ZoomText}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
-                                           Foreground="{StaticResource SpWarning}" FontWeight="SemiBold" />
-                                <TextBlock Text="View:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <TextBlock Text="{Binding ViewMode}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
-                                           Foreground="{StaticResource SpSuccess}" />
+                                    <ToggleButton DockPanel.Dock="Right" Content="Sync pan/zoom"
+                                                  IsChecked="{Binding CompareSyncLocked}" Margin="10,0,0,0"
+                                                  Padding="8,2" FontSize="11"
+                                                  ToolTip="Keep both panes at the same zoom and position" />
+
+                                    <Button DockPanel.Dock="Right" Content="⇄ Swap"
+                                            Command="{Binding SwapComparePlatesCommand}"
+                                            IsEnabled="{Binding CanSwapCompare}"
+                                            Margin="10,0,0,0" Padding="8,2" FontSize="11"
+                                            ToolTip="Exchange the left and right plates" />
+
+                                    <TextBlock Text="Mode" Style="{StaticResource SpMuted}"
+                                               VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <Border Background="{StaticResource SpBorder}" CornerRadius="6" Padding="2">
+                                        <UniformGrid Columns="5">
+                                            <RadioButton GroupName="ComparePresentation" Content="Side-by-side"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding ComparePresentation, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=SideBySide}" />
+                                            <RadioButton GroupName="ComparePresentation" Content="Slide"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding ComparePresentation, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Slide}" />
+                                            <RadioButton GroupName="ComparePresentation" Content="Blink"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding ComparePresentation, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Blink}" />
+                                            <RadioButton GroupName="ComparePresentation" Content="Difference"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding ComparePresentation, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Difference}" />
+                                            <RadioButton GroupName="ComparePresentation" Content="RIP vs ref"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding ComparePresentation, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=RipVsReference}" />
+                                        </UniformGrid>
+                                    </Border>
+                                </DockPanel>
+
+                                <DockPanel Margin="0,6,0,0" LastChildFill="False">
+                                    <TextBlock Text="L" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                    <ComboBox ItemsSource="{Binding Separations}" SelectedItem="{Binding CompareLeft}"
+                                              DisplayMemberPath="Name" Width="150" Height="26" Margin="0,0,12,0" />
+
+                                    <TextBlock Text="R" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="0,0,4,0" />
+                                    <ComboBox ItemsSource="{Binding Separations}" SelectedItem="{Binding CompareRight}"
+                                              DisplayMemberPath="Name" Width="150" Height="26" Margin="0,0,8,0" />
+
+                                    <Button Content="Compare with file…" Command="{Binding CompareWithFileCommand}"
+                                            Padding="8,2" FontSize="11" Margin="0,0,6,0" />
+                                    <Button Content="Reference…" Click="CompareReference_Click"
+                                            Padding="8,2" FontSize="11" Margin="0,0,0,0" />
+
+                                    <StackPanel Orientation="Horizontal" Margin="16,0,0,0"
+                                                Visibility="{Binding IsDifferenceMode, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <TextBlock Text="Threshold" Style="{StaticResource SpMuted}"
+                                                   VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <Slider Minimum="0" Maximum="128" Value="{Binding DifferenceThreshold}"
+                                                Width="120" VerticalAlignment="Center"
+                                                ToolTip="Coverage delta that counts as a difference (0-128)" />
+                                        <TextBlock Text="{Binding DifferenceThreshold}" Style="{StaticResource SpMono}"
+                                                   VerticalAlignment="Center" Margin="6,0,0,0" />
+                                        <TextBlock Text="· changed area" Style="{StaticResource SpMuted}"
+                                                   VerticalAlignment="Center" Margin="10,0,4,0" />
+                                        <TextBlock Text="{Binding DifferenceSummary}" Style="{StaticResource SpMono}"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </DockPanel>
                             </StackPanel>
                         </Border>
+
+                        <!-- Canvas: two panes with a draggable splitter -->
+                        <Grid Grid.Row="1">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition x:Name="LeftColumn" Width="*" />
+                                <ColumnDefinition x:Name="SplitterColumn" Width="0" />
+                                <ColumnDefinition x:Name="RightColumn" Width="0" />
+                            </Grid.ColumnDefinitions>
+
+                            <Grid x:Name="LeftPane" Grid.Column="0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border x:Name="LeftPaneHeader" Grid.Row="0" Visibility="Collapsed"
+                                        Background="{StaticResource SpPanelBg}" BorderBrush="{StaticResource SpBorder}"
+                                        BorderThickness="0,0,0,1" Padding="8,4">
+                                    <TextBlock FontSize="11" Style="{StaticResource SpMuted}">
+                                        <Run Text="LEFT   " />
+                                        <Run Text="{Binding CompareLeft.Name, Mode=OneWay}" Foreground="{StaticResource SpTextPrimary}" />
+                                    </TextBlock>
+                                </Border>
+
+                                <viewer:PlateViewer x:Name="Viewer" Grid.Row="1" />
+
+                                <Canvas Grid.Row="1" IsHitTestVisible="False">
+                                    <Border x:Name="HoverTip" Background="#E60B101A" BorderBrush="{StaticResource SpBorder}"
+                                            BorderThickness="1" CornerRadius="6" Padding="8,4"
+                                            Visibility="{Binding HasHoverReading, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Coverage" FontSize="10" Style="{StaticResource SpMuted}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding HoverPercentText}" FontSize="11"
+                                                       Style="{StaticResource SpMono}" Margin="6,0,0,0"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Border>
+                                </Canvas>
+
+                                <!-- Empty state -->
+                                <StackPanel Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasRaster}" Value="False">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock Text="Open a RIP job to begin (Ctrl+O)" FontSize="16"
+                                               Foreground="{StaticResource SpTextMuted}" HorizontalAlignment="Center" />
+                                    <TextBlock Text="Drop a TIFF or job folder here, or press Ctrl+O"
+                                               Style="{StaticResource SpMuted}" HorizontalAlignment="Center" Margin="0,6,0,2" />
+                                    <TextBlock Text="Recent files live under File ▸ Recent files."
+                                               Style="{StaticResource SpMuted}" HorizontalAlignment="Center" Margin="0,0,0,12" />
+                                    <Button Content="Open demo job" Style="{StaticResource SpChipButton}"
+                                            HorizontalAlignment="Center" Command="{Binding OpenDemoJobCommand}" />
+                                </StackPanel>
+
+                                <!-- Cursor readout -->
+                                <Border Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12"
+                                        Background="#CC0B101A" BorderBrush="{StaticResource SpBorder}" BorderThickness="1"
+                                        CornerRadius="6" Padding="12,6" IsHitTestVisible="False"
+                                        Visibility="{Binding HasRaster, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="X:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding CursorXText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
+                                        <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="Y:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding CursorYText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
+                                        <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="Zoom:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding ZoomText}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
+                                                   Foreground="{StaticResource SpWarning}" FontWeight="SemiBold" />
+                                        <TextBlock Text="View:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding ViewMode}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
+                                                   Foreground="{StaticResource SpSuccess}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <GridSplitter x:Name="CompareSplitter" Grid.Column="1" Width="6"
+                                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                          Background="{StaticResource SpBorder}" Visibility="Collapsed"
+                                          ResizeBehavior="PreviousAndNext" ResizeDirection="Columns"
+                                          ShowsPreview="True" />
+
+                            <Grid x:Name="RightPane" Grid.Column="2" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border x:Name="RightPaneHeader" Grid.Row="0"
+                                        Background="{StaticResource SpPanelBg}" BorderBrush="{StaticResource SpBorder}"
+                                        BorderThickness="0,0,0,1" Padding="8,4">
+                                    <TextBlock FontSize="11" Style="{StaticResource SpMuted}" TextTrimming="CharacterEllipsis">
+                                        <Run Text="RIGHT   " />
+                                        <Run Text="{Binding CompareRightTitle, Mode=OneWay}" Foreground="{StaticResource SpTextPrimary}" />
+                                    </TextBlock>
+                                </Border>
+
+                                <viewer:PlateViewer x:Name="CompareViewer" Grid.Row="1" />
+
+                                <!-- Same readout lane as the left pane -->
+                                <!-- Cursor readout -->
+                                <Border Grid.Row="1" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="12"
+                                        Background="#CC0B101A" BorderBrush="{StaticResource SpBorder}" BorderThickness="1"
+                                        CornerRadius="6" Padding="12,6" IsHitTestVisible="False"
+                                        Visibility="{Binding HasRaster, Converter={StaticResource BoolToVisibilityConverter}}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="X:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding CursorXText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
+                                        <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="Y:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding CursorYText}" Style="{StaticResource SpMono}" Margin="4,0,2,0" MinWidth="52" />
+                                        <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <TextBlock Text="Zoom:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding ZoomText}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
+                                                   Foreground="{StaticResource SpWarning}" FontWeight="SemiBold" />
+                                        <TextBlock Text="View:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                        <TextBlock Text="{Binding ViewMode}" Style="{StaticResource SpMono}" Margin="4,0,0,0"
+                                                   Foreground="{StaticResource SpSuccess}" />
+                                    </StackPanel>
+                                </Border>
+
+                            </Grid>
+
+                            <!-- Single-canvas comparison modes -->
+                            <viewer:PlateCompareView x:Name="CompareOverlay" Grid.ColumnSpan="3"
+                                                     Visibility="Collapsed" />
+                        </Grid>
+
                     </Grid>
                 </Grid>
 
-                <!-- Densitometer & Dot Meter -->
-                <Border Grid.Row="1" Background="{StaticResource SpPanelBg}" Padding="14,10,14,4"
-                        BorderBrush="{StaticResource SpBorder}" BorderThickness="0,1,0,0">
-                    <StackPanel>
-                        <DockPanel Margin="0,0,0,10">
-                            <Border DockPanel.Dock="Right" Background="{StaticResource SpCardBg}" CornerRadius="6" Padding="2">
-                                <StackPanel Orientation="Horizontal">
-                                    <RadioButton GroupName="Aperture" Content="1x1" Style="{StaticResource SpSegmentTab}"
-                                                 IsChecked="{Binding Aperture, Converter={StaticResource IntEqualsConverter}, ConverterParameter=1}" />
-                                    <RadioButton GroupName="Aperture" Content="3x3" Style="{StaticResource SpSegmentTab}"
-                                                 IsChecked="{Binding Aperture, Converter={StaticResource IntEqualsConverter}, ConverterParameter=3}" />
-                                    <RadioButton GroupName="Aperture" Content="5x5" Style="{StaticResource SpSegmentTab}"
-                                                 IsChecked="{Binding Aperture, Converter={StaticResource IntEqualsConverter}, ConverterParameter=5}" />
-                                </StackPanel>
-                            </Border>
-                            <TextBlock DockPanel.Dock="Right" Text="Aperture" Style="{StaticResource SpMuted}"
-                                       VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <materialDesign:PackIcon Kind="Eyedropper" Width="16" Height="16"
-                                                     Foreground="{StaticResource SpAccentText}" VerticalAlignment="Center" />
-                            <TextBlock Text="Densitometer &amp; Dot Meter" Style="{StaticResource SpPanelTitle}" Margin="8,0,16,0" />
-                            <materialDesign:PackIcon Kind="Crosshairs" Width="16" Height="16"
-                                                     Foreground="{StaticResource SpTextMuted}" VerticalAlignment="Center" />
-                            <TextBlock Text="X:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="8,0,0,0" />
-                            <TextBlock Text="{Binding CursorXText}" Style="{StaticResource SpMono}" FontWeight="SemiBold"
-                                       Foreground="{StaticResource SpAccentText}" Margin="4,0,0,0" VerticalAlignment="Center" />
-                            <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="3,0,12,0" />
-                            <TextBlock Text="Y:" Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding CursorYText}" Style="{StaticResource SpMono}" FontWeight="SemiBold"
-                                       Foreground="{StaticResource SpAccentText}" Margin="4,0,0,0" VerticalAlignment="Center" />
-                            <TextBlock Text="mm" Style="{StaticResource SpMuted}" VerticalAlignment="Center" Margin="3,0,0,0" />
-                        </DockPanel>
-
-                        <ItemsControl ItemsSource="{Binding DensityReadings}" MinHeight="86">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <UniformGrid Columns="4" />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
-                                            BorderThickness="1" CornerRadius="8" Padding="10,8" Margin="0,0,8,8">
-                                        <StackPanel>
-                                            <DockPanel>
-                                                <TextBlock DockPanel.Dock="Right" Text="{Binding PercentText}"
-                                                           Style="{StaticResource SpMono}" FontWeight="SemiBold" />
-                                                <Border Width="10" Height="10" CornerRadius="2" Margin="0,0,7,0" VerticalAlignment="Center"
-                                                        Background="{Binding DisplayBrush}" BorderBrush="{StaticResource SpBorder}" BorderThickness="1" />
-                                                <TextBlock Text="{Binding Name}" FontSize="11" TextTrimming="CharacterEllipsis"
-                                                           Foreground="{StaticResource SpTextMuted}" VerticalAlignment="Center" />
-                                            </DockPanel>
-                                            <ProgressBar Style="{StaticResource SpThinBar}" Height="4" Margin="0,7,0,0"
-                                                         Value="{Binding Percent, Mode=OneWay}" Foreground="{Binding DisplayBrush}" />
-                                        </StackPanel>
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </Border>
             </Grid>
 
             <!-- Right: Separations & Plates -->
@@ -467,13 +636,18 @@
 
                     <!-- View mode tabs -->
                     <Border Grid.Row="1" Background="{StaticResource SpCardBg}" CornerRadius="8" Padding="3" Margin="0,0,0,10">
-                        <UniformGrid Columns="3">
+                        <UniformGrid Columns="4">
                             <RadioButton GroupName="ViewMode" Content="Composite" Style="{StaticResource SpSegmentTab}"
                                          IsChecked="{Binding ViewMode, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Composite}" />
                             <RadioButton GroupName="ViewMode" Content="Film B&amp;W" Style="{StaticResource SpSegmentTab}"
                                          IsChecked="{Binding ViewMode, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=FilmBlackWhite}" />
                             <RadioButton GroupName="ViewMode" Content="Progressive" Style="{StaticResource SpSegmentTab}"
                                          IsChecked="{Binding ViewMode, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Progressive}" />
+                            <ToggleButton Content="Dots" Style="{StaticResource SpSegmentTab}"
+                                          IsChecked="{Binding IsDotsView, Mode=OneWay}"
+                                          Command="{Binding ZoomToDotsCommand}"
+                                          IsEnabled="{Binding HasRaster}"
+                                          ToolTip="Zoom to 1600% (16× native) to inspect individual pixels" />
                         </UniformGrid>
                     </Border>
 
@@ -509,11 +683,18 @@
 
                     <!-- Plate list -->
                     <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto">
-                        <ItemsControl ItemsSource="{Binding Separations}">
+                        <StackPanel>
+                            <ItemsControl ItemsSource="{Binding Separations}">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate DataType="{x:Type vm:SeparationViewModel}">
                                     <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
                                             BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,0,6,8">
+                                            <Border.ContextMenu>
+                                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                                    <MenuItem Header="Custom colour…" Click="SeparationCustomColor_Click" />
+                                                    <MenuItem Header="Reset to RIP colour" Click="SeparationResetColor_Click" />
+                                                </ContextMenu>
+                                            </Border.ContextMenu>
                                         <Grid>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
@@ -531,9 +712,11 @@
 
                                                 <ToggleButton Grid.Column="0" Style="{StaticResource SpEyeToggle}"
                                                               IsChecked="{Binding IsVisible}" ToolTip="Show / hide plate" />
-                                                <Border Grid.Column="1" Width="14" Height="14" CornerRadius="3" Margin="4,0,8,0"
-                                                        Background="{Binding DisplayBrush}"
-                                                        BorderBrush="{StaticResource SpTextMuted}" BorderThickness="1" />
+                                                <Border Grid.Column="1" Width="42" Height="30" CornerRadius="3" Margin="4,0,8,0"
+                                                        Background="White"
+                                                        BorderBrush="{StaticResource SpTextMuted}" BorderThickness="1">
+                                                    <Image Source="{Binding Thumbnail}" Stretch="Uniform" Margin="1" />
+                                                </Border>
                                                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
                                                     <StackPanel Orientation="Horizontal">
                                                         <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold"
@@ -570,7 +753,233 @@
                                     </Border>
                                 </DataTemplate>
                             </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                            </ItemsControl>
+
+                            <!-- Simulation & orientation -->
+                            <Expander IsExpanded="{Binding ShowSimulationSection, Mode=TwoWay}" Margin="0,0,6,10">
+                                <Expander.Header>
+                                    <TextBlock Text="SIMULATION &amp; ORIENTATION" FontSize="10" FontWeight="Bold"
+                                               Style="{StaticResource SpMuted}" />
+                                </Expander.Header>
+                                <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
+                                        BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,6,0,0"
+                                        IsEnabled="{Binding HasRaster}">
+                                <StackPanel>
+                                    <TextBlock Text="Substrate" FontSize="11" Foreground="{StaticResource SpTextMuted}"
+                                               Margin="0,10,0,4" />
+                                    <Border Background="{StaticResource SpBorder}" CornerRadius="6" Padding="2">
+                                        <UniformGrid Columns="2">
+                                            <RadioButton GroupName="Substrate" Content="Opaque paper"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding OpaquePaper, Mode=TwoWay}"
+                                                         ToolTip="Normal stock: inks multiply on white paper" />
+                                            <RadioButton GroupName="Substrate" Content="Metallic"
+                                                         Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding SimulateMetallicPaper, Mode=TwoWay}"
+                                                         ToolTip="Metallic stock: dull silver paper with opaque white ink" />
+                                        </UniformGrid>
+                                    </Border>
+
+                                    <CheckBox Content="Black overprint" IsChecked="{Binding BlackOverprint}"
+                                              FontSize="11" Margin="0,10,0,0"
+                                              ToolTip="On: process inks stay under black. Off: black knocks out the inks beneath it." />
+
+                                    <TextBlock Text="Rotate" FontSize="11" Foreground="{StaticResource SpTextMuted}"
+                                               Margin="0,10,0,4" />
+                                    <Border Background="{StaticResource SpBorder}" CornerRadius="6" Padding="2">
+                                        <UniformGrid Columns="4">
+                                            <RadioButton GroupName="Rotation" Content="0°" Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding IsRotation0, Mode=OneWay}"
+                                                         Command="{Binding RotateToCommand}" CommandParameter="0" />
+                                            <RadioButton GroupName="Rotation" Content="90°" Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding IsRotation90, Mode=OneWay}"
+                                                         Command="{Binding RotateToCommand}" CommandParameter="90" />
+                                            <RadioButton GroupName="Rotation" Content="180°" Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding IsRotation180, Mode=OneWay}"
+                                                         Command="{Binding RotateToCommand}" CommandParameter="180" />
+                                            <RadioButton GroupName="Rotation" Content="270°" Style="{StaticResource SpSegmentTab}"
+                                                         IsChecked="{Binding IsRotation270, Mode=OneWay}"
+                                                         Command="{Binding RotateToCommand}" CommandParameter="270" />
+                                        </UniformGrid>
+                                    </Border>
+
+                                    <UniformGrid Columns="2" Margin="0,8,0,0">
+                                        <ToggleButton Content="Flip H" Margin="0,0,3,0" Padding="6,2" FontSize="11"
+                                                      IsChecked="{Binding IsFlipHorizontal, Mode=OneWay}"
+                                                      Command="{Binding FlipHorizontalCommand}"
+                                                      ToolTip="Mirror the plate left to right" />
+                                        <ToggleButton Content="Flip V" Margin="3,0,0,0" Padding="6,2" FontSize="11"
+                                                      IsChecked="{Binding IsFlipVertical, Mode=OneWay}"
+                                                      Command="{Binding FlipVerticalCommand}"
+                                                      ToolTip="Mirror the plate top to bottom" />
+                                    </UniformGrid>
+
+                                    <DockPanel Margin="0,8,0,0">
+                                        <Button Content="Reset orientation" Command="{Binding ResetOrientationCommand}"
+                                                Background="Transparent" BorderThickness="0" Padding="0"
+                                                HorizontalAlignment="Left" FontSize="11"
+                                                Foreground="{StaticResource SpAccentText}"
+                                                ToolTip="Clear rotation and both flips" />
+                                        <TextBlock Text="{Binding ViewTransformText}" DockPanel.Dock="Right"
+                                                   Style="{StaticResource SpMuted}" FontSize="10"
+                                                   VerticalAlignment="Center" />
+                                    </DockPanel>
+
+                                    <TextBlock Text="Back side opacity" FontSize="11" Foreground="{StaticResource SpTextMuted}"
+                                               Margin="0,10,0,2" />
+                                    <Slider Minimum="0" Maximum="1" Value="{Binding BackSideOpacity}"
+                                            ToolTip="Mirror the back side over the front to check registration and bleed-through" />
+                                    <TextBlock Text="{Binding BackSideOpacity, StringFormat=Back {0:P0}}"
+                                               Style="{StaticResource SpMono}" FontSize="10" />
+                                    </StackPanel>
+                                </Border>
+                            </Expander>
+
+                            <!-- RIP queue -->
+                            <Expander IsExpanded="{Binding ShowQueueSection, Mode=TwoWay}" Margin="0,0,6,10">
+                                <Expander.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="RIP QUEUE" FontSize="10" FontWeight="Bold"
+                                                   Style="{StaticResource SpMuted}" VerticalAlignment="Center" />
+                                        <Border Background="{StaticResource SpBorder}" CornerRadius="8"
+                                                Padding="6,0" Margin="8,0,0,0">
+                                            <TextBlock Text="{Binding RipQueue.Count}" FontSize="10"
+                                                       Style="{StaticResource SpMono}" />
+                                        </Border>
+                                    </StackPanel>
+                                </Expander.Header>
+                                <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
+                                        BorderThickness="1" CornerRadius="8" Padding="10" Margin="0,6,0,0">
+                                    <StackPanel>
+                                        <DockPanel LastChildFill="False" Margin="0,0,0,6">
+                                            <Button DockPanel.Dock="Right" Content="Refresh" Margin="8,0,0,0"
+                                                    Style="{StaticResource SpChipButton}"
+                                                    Command="{Binding RefreshQueueCommand}" />
+                                            <TextBlock Text="{Binding QueueFolders}" Style="{StaticResource SpMuted}"
+                                                       TextWrapping="Wrap" FontSize="10" />
+                                        </DockPanel>
+
+                                        <TextBlock Text="No watched folders yet. Add a folder and finished RIP output appears here."
+                                                   FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource SpMuted}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding RipQueue.Count}" Value="0">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+
+                                        <ListBox x:Name="QueueList" ItemsSource="{Binding RipQueue}" MaxHeight="220"
+                                                 SelectionMode="Extended"
+                                                 MouseDoubleClick="QueueList_MouseDoubleClick"
+                                                 PreviewMouseRightButtonDown="QueueList_PreviewMouseRightButtonDown"
+                                                 Background="Transparent" BorderThickness="0">
+                                            <ListBox.ContextMenu>
+                                                <ContextMenu>
+                                                    <MenuItem Header="Open selected files" Click="QueueOpenSelected_Click" />
+                                                </ContextMenu>
+                                            </ListBox.ContextMenu>
+                                            <ListBox.GroupStyle>
+                                                <GroupStyle>
+                                                    <GroupStyle.HeaderTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Name}" FontSize="11" FontWeight="SemiBold"
+                                                                       TextTrimming="CharacterEllipsis" Margin="0,6,0,2"
+                                                                       ToolTip="{Binding Name}" />
+                                                        </DataTemplate>
+                                                    </GroupStyle.HeaderTemplate>
+                                                </GroupStyle>
+                                            </ListBox.GroupStyle>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <DockPanel LastChildFill="True">
+                                                        <Border DockPanel.Dock="Left" Width="18" Height="16"
+                                                                Background="{StaticResource SpBorder}" CornerRadius="3"
+                                                                Margin="0,0,6,0">
+                                                            <TextBlock Text="{Binding Chip}" FontSize="9" FontWeight="Bold"
+                                                                       Style="{StaticResource SpMono}"
+                                                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                        <Border DockPanel.Dock="Right" Background="#2234D399" CornerRadius="3"
+                                                                Padding="4,0" Margin="6,0,0,0" VerticalAlignment="Center">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsLoaded}" Value="True">
+                                                                            <Setter Property="Visibility" Value="Visible" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <TextBlock Text="LOADED" FontSize="8" FontWeight="Bold"
+                                                                       Foreground="{StaticResource SpSuccess}" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding DisplayName}" FontSize="11"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   VerticalAlignment="Center" ToolTip="{Binding Path}" />
+                                                    </DockPanel>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+
+                                        <Button Content="Add watch folder…" Margin="0,6,0,0" Height="30"
+                                                Command="{Binding AddWatchFolderCommand}"
+                                                Background="Transparent" BorderBrush="{StaticResource SpAccent}"
+                                                Foreground="{StaticResource SpAccentText}" FontSize="12" />
+                                        <CheckBox Content="Auto-refresh when the RIP rewrites the file"
+                                                  IsChecked="{Binding AutoRefresh}" FontSize="10" Margin="0,6,0,0" />
+                                    </StackPanel>
+                                </Border>
+                            </Expander>
+
+                            <!-- Navigator -->
+                            <Expander IsExpanded="{Binding ShowNavigatorSection, Mode=TwoWay}" Margin="0,0,6,10">
+                                <Expander.Header>
+                                    <TextBlock Text="NAVIGATOR" FontSize="10" FontWeight="Bold"
+                                               Style="{StaticResource SpMuted}" />
+                                </Expander.Header>
+                                <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
+                                        BorderThickness="1" CornerRadius="8" Padding="8" Margin="0,6,0,0">
+                                    <StackPanel>
+                                        <Grid Height="180">
+                                            <viewer:PlateNavigator x:Name="Navigator" Height="180"
+                                                                   HorizontalAlignment="Stretch" />
+                                            <Border Background="#E6151D30" CornerRadius="6">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding HasRaster}" Value="False">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                    <TextBlock Text="No job loaded" FontSize="12" HorizontalAlignment="Center" />
+                                                    <TextBlock Text="Open a job to see the plate overview" FontSize="10"
+                                                               Style="{StaticResource SpMuted}" HorizontalAlignment="Center"
+                                                               Margin="0,4,0,0" />
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                        <DockPanel Margin="2,6,0,0" LastChildFill="False">
+                                            <TextBlock Text="Viewport" FontSize="10" Style="{StaticResource SpMuted}"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding NavigatorViewportText}" FontSize="10"
+                                                       Style="{StaticResource SpMono}" DockPanel.Dock="Right"
+                                                       VerticalAlignment="Center" />
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+                            </Expander>
+
+                        </StackPanel>
                     </ScrollViewer>
 
                     <!-- Engine / screening -->
@@ -602,10 +1011,14 @@
             <DockPanel LastChildFill="True">
                 <TextBlock DockPanel.Dock="Right" Text="{Binding JobStatus}" Style="{StaticResource SpMuted}"
                            VerticalAlignment="Center" Margin="10,0,0,0" />
+                <TextBlock DockPanel.Dock="Right" Text="{Binding ViewScaleText}" Style="{StaticResource SpMono}"
+                           VerticalAlignment="Center" Margin="12,0,0,0" />
                 <Button DockPanel.Dock="Right" Content="Cancel" Command="{Binding CancelLoadCommand}"
                         IsEnabled="{Binding IsLoading}" Margin="10,0,0,0" Padding="8,1" FontSize="11" />
                 <ProgressBar DockPanel.Dock="Right" Width="140" Height="6" VerticalAlignment="Center"
-                             Minimum="0" Maximum="100" Value="{Binding LoadProgress}" Margin="10,0,0,0" />
+                             Minimum="0" Maximum="100" Value="{Binding LoadProgress}" Margin="10,0,0,0"
+                             Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibilityConverter}}"
+                             ToolTip="{Binding StatusText}" />
                 <TextBlock Text="{Binding StatusText}" FontSize="11" TextTrimming="CharacterEllipsis"
                            VerticalAlignment="Center" />
             </DockPanel>

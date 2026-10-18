@@ -170,6 +170,63 @@ public class ProofSettings
     
     // Custom device link profile (optional)
     public string DeviceLinkProfilePath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Preflight thresholds for the press this profile describes. A web press with a wide slug
+    /// band and a sheetfed press with a narrow one must not share the same numbers.
+    /// </summary>
+    public PreflightSettings Preflight { get; set; } = new();
+}
+
+/// <summary>
+/// Per-press preflight thresholds. Defaults match the conservative values the checks shipped
+/// with; override them on the press profile (or per job) without code changes.
+/// </summary>
+public sealed class PreflightSettings
+{
+    /// <summary>Label for the press these numbers belong to, shown in warnings.</summary>
+    public string PressName { get; set; } = string.Empty;
+
+    /// <summary>Width of the slug / marks band around the trim area, in millimetres.</summary>
+    public double SlugBandMm { get; set; } = 3.0;
+
+    /// <summary>Below this share of inked pixels a plate is "suspiciously little content" (percent).</summary>
+    public double TinyInkedPixelPercent { get; set; } = 0.5;
+
+    /// <summary>Below this average tone a tiny plate is reported (percent).</summary>
+    public double TinyCoveragePercent { get; set; } = 2.0;
+
+    /// <summary>Above this coverage a plate is advised as possibly inverted (percent).</summary>
+    public double NearSolidPercent { get; set; } = 99.9;
+
+    /// <summary>Coverage a sibling process plate needs to count as having real ink (percent).</summary>
+    public double MeaningfulCoveragePercent { get; set; } = 1.0;
+
+    /// <summary>Below this coverage a sibling is reported as a likely missing separation (percent).</summary>
+    public double MissingSeparationPercent { get; set; } = 0.05;
+
+    /// <summary>Paper hairline width (mm) that counts as a trap gap between two inks.</summary>
+    public double TrapGapMm { get; set; } = 0.15;
+
+    /// <summary>How many gap pixels must be found before the trap check warns.</summary>
+    public double TrapGapMinPixels { get; set; } = 4;
+
+    /// <summary>
+    /// Copy with values clamped to sane ranges. A typo (negative band, swapped limits) must not
+    /// turn every plate into a warning, so bad input collapses to a usable range instead.
+    /// </summary>
+    public PreflightSettings Normalized() => new()
+    {
+        PressName = PressName,
+        SlugBandMm = Math.Clamp(SlugBandMm, 0, 25),
+        TinyInkedPixelPercent = Math.Clamp(TinyInkedPixelPercent, 0, 100),
+        TinyCoveragePercent = Math.Clamp(TinyCoveragePercent, 0, 100),
+        NearSolidPercent = Math.Clamp(NearSolidPercent, 90, 100),
+        MeaningfulCoveragePercent = Math.Clamp(MeaningfulCoveragePercent, 0, 100),
+        MissingSeparationPercent = Math.Clamp(MissingSeparationPercent, 0, MeaningfulCoveragePercent),
+        TrapGapMm = Math.Clamp(TrapGapMm, 0.01, 2.0),
+        TrapGapMinPixels = Math.Clamp(TrapGapMinPixels, 1, 1_000_000)
+    };
 }
 
 /// <summary>

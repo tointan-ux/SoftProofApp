@@ -39,33 +39,96 @@ public static class CcittG4
         if (width <= 0 || height <= 0)
             throw new PbfFormatException($"CCITT image has invalid size {width}x{height}.");
 
-        var bits = new MsbBitReader(data);
-        var reference = new int[width + 2];
-        var current = new int[width + 2];
-        var referenceCount = 0;
-        var finished = false;
-
+        var cursor = new Cursor(data, width);
         for (var y = 0; y < height; y++)
         {
-            var currentCount = 0;
+            var ok = cursor.TryDecodeRow(out var transitions, out var count);
+            onRow(y, transitions, ok ? count : 0);
+        }
+    }
 
-            if (!finished)
+    /// <summary>
+    /// Resumable row-at-a-time decoder. After each row, <see cref="BitOffset"/> and
+    /// <see cref="ReferenceLine"/> describe exactly the state needed to restart at
+    /// <see cref="Row"/> — store those as a checkpoint and a later seek costs at most one
+    /// checkpoint interval of decoding.
+    /// </summary>
+    public sealed class Cursor
+    {
+        private readonly MsbBitReader _bits;
+        private readonly int _width;
+        private int[] _reference;
+        private int[] _current;
+        private int _referenceCount;
+        private bool _finished;
+
+        public Cursor(ReadOnlySpan<byte> data, int width, long bitOffset = 0,
+                      ReadOnlySpan<int> reference = default, int startRow = 0)
+            : this(data.ToArray(), width, bitOffset, reference, startRow)
+        {
+        }
+
+        /// <summary>Overload that does not copy the payload (use for large strips).</summary>
+        public Cursor(byte[] data, int width, long bitOffset = 0,
+                      ReadOnlySpan<int> reference = default, int startRow = 0)
+        {
+            if (width <= 0)
+                throw new PbfFormatException($"CCITT image has invalid width {width}.");
+            if (bitOffset < 0 || bitOffset > (long)data.Length * 8)
+                throw new ArgumentOutOfRangeException(nameof(bitOffset));
+
+            _width = width;
+            _bits = new MsbBitReader(data, bitOffset);
+            _reference = new int[width + 2];
+            _current = new int[width + 2];
+
+            if (!reference.IsEmpty)
             {
-                try
-                {
-                    DecodeRow(bits, width, reference, referenceCount, current, ref currentCount);
-                }
-                catch (EndOfStreamException)
-                {
-                    finished = true;
-                }
+                var count = Math.Min(reference.Length, _reference.Length);
+                reference[..count].CopyTo(_reference);
+                _referenceCount = count;
             }
 
-            onRow(y, current, currentCount);
+            Row = startRow;
+        }
 
-            // Swap current and reference rows.
-            (reference, current) = (current, reference);
-            referenceCount = currentCount;
+        /// <summary>Row that <see cref="TryDecodeRow"/> will decode next.</summary>
+        public int Row { get; set; }
+
+        /// <summary>Bit position in the strip at the start of <see cref="Row"/>.</summary>
+        public long BitOffset => _bits.Position;
+
+        public int ReferenceCount => _referenceCount;
+
+        /// <summary>Transitions of row <see cref="Row"/> - 1 (the reference line).</summary>
+        public ReadOnlySpan<int> ReferenceLine => _reference.AsSpan(0, _referenceCount);
+
+        public bool TryDecodeRow(out int[] transitions, out int count)
+        {
+            count = 0;
+
+            if (_finished)
+            {
+                transitions = _current;
+                return false;
+            }
+
+            try
+            {
+                DecodeRow(_bits, _width, _reference, _referenceCount, _current, ref count);
+            }
+            catch (EndOfStreamException)
+            {
+                _finished = true;
+                transitions = _current;
+                return false;
+            }
+
+            transitions = _current;
+            (_reference, _current) = (_current, _reference);
+            _referenceCount = count;
+            Row++;
+            return true;
         }
     }
 
@@ -213,21 +276,27 @@ public static class CcittG4
     private sealed class MsbBitReader
     {
         private readonly byte[] _data;
-        private int _bitPosition;
+        private long _bitPosition;
 
-        public MsbBitReader(ReadOnlySpan<byte> data) => _data = data.ToArray();
+        public MsbBitReader(byte[] data, long bitPosition = 0)
+        {
+            _data = data;
+            _bitPosition = bitPosition;
+        }
 
-        private int RemainingBits => _data.Length * 8 - _bitPosition;
+        public long Position => _bitPosition;
+
+        private long TotalBits => (long)_data.Length * 8;
 
         public bool TryReadBit(out int bit)
         {
-            if (_bitPosition >= _data.Length * 8)
+            if (_bitPosition >= TotalBits)
             {
                 bit = 0;
                 return false;
             }
 
-            bit = (_data[_bitPosition >> 3] >> (7 - (_bitPosition & 7))) & 1;
+            bit = (_data[(int)(_bitPosition >> 3)] >> (int)(7 - (_bitPosition & 7))) & 1;
             _bitPosition++;
             return true;
         }

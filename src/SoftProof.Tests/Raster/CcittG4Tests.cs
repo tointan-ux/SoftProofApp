@@ -102,8 +102,17 @@ public class CcittG4Tests
         var plates = await new PlateLoader().LoadAsync(job, warnings);
 
         Assert.Single(plates);
-        Assert.True(job.Metadata.Width < 60000, "metadata must describe the downsampled raster");
-        Assert.True(job.Metadata.Height < 73229);
+        // The job keeps the native plate metadata; only the decoded raster is smaller.
+        Assert.Equal(60000, job.Metadata.Width);
+        Assert.Equal(73229, job.Metadata.Height);
+        Assert.Equal(2400, job.Metadata.Resolution);
+        Assert.True(plates[0].Width < 60000, "the decoded raster must be downsampled");
+        Assert.True(plates[0].Height < 73229);
+
+        // The overview decimation the UI uses for "view 150 dpi" and "Overview 1/16".
+        Assert.Equal(16, plates[0].Pyramid!.Base.Factor);
+        Assert.Equal(150, 2400 / plates[0].Pyramid!.Base.Factor);
+
         Assert.Contains(warnings, w => w.Contains("decoded"));
         Assert.InRange(plates[0].InkedAreaPercent, 0.0, 60.0);
     }

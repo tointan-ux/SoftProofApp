@@ -25,4 +25,9 @@
     <None Include="Fixtures\**\*.tif" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures\**\*.pbuf" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Reference decoder: managed port of libtiff, used only to cross-check our strip decode. -->
+    <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.649" />
+  </ItemGroup>
+
 </Project>

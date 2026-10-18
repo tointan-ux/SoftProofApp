@@ -1,4 +1,5 @@
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using SoftProof.Core.Analysis;
 using SoftProof.Core.Models;
@@ -16,12 +17,19 @@ public partial class SeparationViewModel
         if (layer != null)
         {
             InkedAreaPercent = layer.InkedAreaPercent;
-            DisplayBrush = FrozenBrush(layer.R, layer.G, layer.B);
+            _baseR = layer.R;
+            _baseG = layer.G;
+            _baseB = layer.B;
+            DisplayBrush = FrozenBrush(_baseR, _baseG, _baseB);
+            Thumbnail = CreateThumbnail(layer);
         }
         else
         {
             var c = DisplayColor;
-            DisplayBrush = FrozenBrush(c.R, c.G, c.B);
+            _baseR = c.R;
+            _baseG = c.G;
+            _baseB = c.B;
+            DisplayBrush = FrozenBrush(_baseR, _baseG, _baseB);
         }
     }
     
@@ -34,7 +42,82 @@ public partial class SeparationViewModel
     /// <summary>Set by the owning view model; called when visible / solo / invert changed.</summary>
     internal Action? FlagsChanged { get; set; }
     
-    public Brush DisplayBrush { get; }
+    /// <summary>Small preview of the plate's own artwork, shown in the plate list.</summary>
+    private ImageSource? _thumbnail;
+    public ImageSource? Thumbnail
+    {
+        get => _thumbnail;
+        private set
+        {
+            _thumbnail = value;
+            OnPropertyChanged();
+        }
+    }
+
+    private byte _baseR;
+    private byte _baseG;
+    private byte _baseB;
+
+    /// <summary>Ink colour override chosen by the user, or null for the RIP/default colour.</summary>
+    public System.Windows.Media.Color? CustomColor { get; private set; }
+
+    /// <summary>Apply a custom display colour to this separation (including spot inks).</summary>
+    public void SetCustomColor(System.Windows.Media.Color color)
+    {
+        CustomColor = color;
+
+        if (Layer != null)
+        {
+            Layer.SetDisplayColor(color.R, color.G, color.B);
+            Thumbnail = CreateThumbnail(Layer);
+        }
+
+        DisplayBrush = FrozenBrush(color.R, color.G, color.B);
+        FlagsChanged?.Invoke();
+    }
+
+    /// <summary>Return to the colour that came from the job/RIP.</summary>
+    public void ResetColor()
+    {
+        CustomColor = null;
+
+        if (Layer != null)
+        {
+            Layer.SetDisplayColor(_baseR, _baseG, _baseB);
+            Thumbnail = CreateThumbnail(Layer);
+        }
+
+        DisplayBrush = FrozenBrush(_baseR, _baseG, _baseB);
+        FlagsChanged?.Invoke();
+    }
+
+    private static ImageSource CreateThumbnail(PlateLayer layer)
+    {
+        const int size = 48;
+
+        // Prefer the coarsest pyramid level: same picture, a fraction of the pixels to scan.
+        var coarse = layer.Pyramid?.Levels[^1];
+        var pixels = coarse is null
+            ? PlateThumbnail.Build(layer, size)
+            : PlateThumbnail.Build(coarse.Coverage, coarse.Width, coarse.Height, size,
+                                   layer.R, layer.G, layer.B);
+
+        var bitmap = BitmapSource.Create(size, size, 96, 96, PixelFormats.Bgra32, null,
+                                         pixels, size * 4);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    private Brush _displayBrush = Brushes.Gray;
+    public Brush DisplayBrush
+    {
+        get => _displayBrush;
+        private set
+        {
+            _displayBrush = value;
+            OnPropertyChanged();
+        }
+    }
     
     public double InkedAreaPercent { get; }
     public string InkedAreaText => $"{InkedAreaPercent:0.0}%";
@@ -97,16 +180,21 @@ public partial class DensityReading : ObservableObject
 /// <summary>One row in the preflight list.</summary>
 public sealed class PreflightItem
 {
-    public PreflightItem(string title, string detail, PreflightStatus status)
+    public PreflightItem(string title, string detail, PreflightStatus status,
+                         FocusRegion? focus = null)
     {
         Title = title;
         Detail = detail;
         Status = status;
+        Focus = focus;
     }
-    
+
     public string Title { get; }
     public string Detail { get; }
     public PreflightStatus Status { get; }
+
+    /// <summary>Where to jump when the row is clicked, when the check could locate the issue.</summary>
+    public FocusRegion? Focus { get; }
 }
 
 public sealed class PlateSetEventArgs : EventArgs
