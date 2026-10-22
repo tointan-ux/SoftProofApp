@@ -26,7 +26,23 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        DispatcherUnhandledException += (_, args) => WriteErrorLog("runtime-error.log", args.Exception);
+        DispatcherUnhandledException += (_, args) =>
+        {
+            DiagnosticsLog.Error("DispatcherUnhandledException", args.Exception);
+            WriteErrorLog("runtime-error.log", args.Exception);
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+            DiagnosticsLog.Error("AppDomain.UnhandledException",
+                args.ExceptionObject as Exception ?? new Exception(args.ExceptionObject?.ToString()));
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            DiagnosticsLog.Error("UnobservedTaskException", args.Exception);
+            args.SetObserved();
+        };
+
+        DiagnosticsLog.Info($"startup {Environment.OSVersion.VersionString}");
 
         // async void: an unhandled exception here would tear the process down with no
         // explanation, so report startup failures (e.g. DI misconfiguration) explicitly.
@@ -135,5 +151,5 @@ public partial class App : Application
 public class ViewModelLocator
 {
     public MainViewModel Main => (Application.Current as App)?.AppHost?.Services.GetRequiredService<MainViewModel>() 
-        ?? new MainViewModel(null!, null!, null!, null!, null!, null!, null!);
+        ?? new MainViewModel(null!, null!, null!, null!, null!, null!, null!, null!);
 }

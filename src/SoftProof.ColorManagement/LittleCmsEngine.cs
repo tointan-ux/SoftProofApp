@@ -41,7 +41,7 @@ internal static class LcmsNative
         throw new DllNotFoundException(
             "Could not load lcms2.dll (Little CMS, 64-bit). Looked in:\n  " +
             string.Join("\n  ", candidates) +
-            "\nMake sure lcms2.dll is next to SoftProof.UI.exe and the process is 64-bit.");
+            "\nMake sure lcms2.dll is next to SoftProof.exe and the process is 64-bit.");
     }
     
     // Profile handling

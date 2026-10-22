@@ -28,6 +28,8 @@ public sealed class TiffStripSource : IPlateSource
     private readonly bool _reverseBits;
     private readonly G4CheckpointStore? _checkpointStore;
     private readonly object _gate = new();
+    private int _activeReads;
+    private bool _disposeRequested;
 
     /// <summary>Rows between saved G4 checkpoints (0 disables checkpointing).</summary>
     public int CheckpointInterval { get; set; } = 512;
@@ -170,29 +172,67 @@ public sealed class TiffStripSource : IPlateSource
     public async ValueTask ReadRowsAsync(int y0, int count, Memory<byte> dest,
                                          CancellationToken ct = default)
     {
-        var rowBytes = Info.RowBytes;
-
-        if (count < 0)
-            throw new ArgumentOutOfRangeException(nameof(count));
-        if (y0 < 0 || y0 + count > Info.Height)
-            throw new ArgumentOutOfRangeException(nameof(y0), "Row range is outside the plate.");
-        if (count == 0)
-            return;
-        if (dest.Length < (long)count * rowBytes)
-            throw new ArgumentException($"Destination needs {count * rowBytes} bytes.", nameof(dest));
-
-        if (_offsets.Length == 1)
+        EnterRead();
+        try
         {
-            // One strip: no random access inside a G4 stream, so decode forward and stop at y1.
-            if (Info.Compression == 4)
-                await Task.Run(() => ReadSingleStripG4(y0, count, dest, ct), ct).ConfigureAwait(false);
+            var rowBytes = Info.RowBytes;
+
+            if (count < 0)
+                throw new ArgumentOutOfRangeException(nameof(count));
+            if (y0 < 0 || (long)y0 + count > Info.Height)
+                throw new ArgumentOutOfRangeException(nameof(y0), "Row range is outside the plate.");
+            if (count == 0)
+                return;
+
+            var required = (long)count * rowBytes;
+            if (dest.Length < required)
+                throw new ArgumentException($"Destination needs {required} bytes.", nameof(dest));
+
+            if (_offsets.Length == 1)
+            {
+                // One strip: no random access inside a G4 stream, so decode forward and stop at y1.
+                if (Info.Compression == 4)
+                    await Task.Run(() => ReadSingleStripG4(y0, count, dest, ct), ct).ConfigureAwait(false);
+                else
+                    await Task.Run(() => ReadSingleStripRaw(y0, count, dest, ct), ct).ConfigureAwait(false);
+            }
             else
-                await Task.Run(() => ReadSingleStripRaw(y0, count, dest, ct), ct).ConfigureAwait(false);
+            {
+                await Task.Run(() => ReadFromStrips(y0, count, dest, ct), ct).ConfigureAwait(false);
+            }
         }
-        else
+        finally
         {
-            await Task.Run(() => ReadFromStrips(y0, count, dest, ct), ct).ConfigureAwait(false);
+            ExitRead();
         }
+    }
+
+    /// <summary>
+    /// Register an in-flight read so Dispose cannot close the stream under it. A pan that
+    /// supersedes a decode used to dispose the shared FileStream while RandomAccess.Read was
+    /// still using its handle.
+    /// </summary>
+    private void EnterRead()
+    {
+        lock (_gate)
+        {
+            if (_disposeRequested)
+                throw new ObjectDisposedException(nameof(TiffStripSource));
+            _activeReads++;
+        }
+    }
+
+    private void ExitRead()
+    {
+        var close = false;
+        lock (_gate)
+        {
+            _activeReads--;
+            close = _disposeRequested && _activeReads == 0;
+        }
+
+        if (close)
+            CloseResources();
     }
 
     private void ReadFromStrips(int y0, int count, Memory<byte> dest, CancellationToken ct)
@@ -216,10 +256,17 @@ public sealed class TiffStripSource : IPlateSource
 
                 var from = Math.Max(y0, stripFirstRow);
                 var to = Math.Min(end, stripFirstRow + rowsInStrip);
-                var bytes = (to - from) * rowBytes;
+                var bytes = (long)(to - from) * rowBytes;
+                if (bytes > int.MaxValue)
+                    throw new PlateSourceException("Requested row range is too large for one buffer.");
 
-                strip.AsSpan((from - stripFirstRow) * rowBytes, bytes)
-                     .CopyTo(dest.Span.Slice((from - y0) * rowBytes, bytes));
+                var sourceOffset = (long)(from - stripFirstRow) * rowBytes;
+                var targetOffset = (long)(from - y0) * rowBytes;
+                if (sourceOffset + bytes > strip.LongLength || targetOffset + bytes > dest.Length)
+                    throw new PlateSourceException("Strip row range lies outside its buffer.");
+
+                strip.AsSpan((int)sourceOffset, (int)bytes)
+                     .CopyTo(dest.Span.Slice((int)targetOffset, (int)bytes));
             }
         }
     }
@@ -310,7 +357,11 @@ public sealed class TiffStripSource : IPlateSource
     private byte[] DecodeStrip(int index, int rows, CancellationToken ct)
     {
         var rowBytes = Info.RowBytes;
-        var target = new byte[(long)rows * rowBytes];
+        var length = (long)rows * rowBytes;
+        if (length > int.MaxValue)
+            throw new PlateSourceException("Decoded strip is too large for one buffer; reduce RowsPerStrip.");
+
+        var target = new byte[length];
         var payload = ReadAt(_offsets[index], _counts[index]);
 
         switch (Info.Compression)
@@ -345,7 +396,11 @@ public sealed class TiffStripSource : IPlateSource
     private void ReadSingleStripG4(int y0, int count, Memory<byte> dest, CancellationToken ct)
     {
         var rowBytes = Info.RowBytes;
-        var target = dest.Slice(0, count * rowBytes);
+        var targetBytes = (long)count * rowBytes;
+        if (targetBytes > int.MaxValue)
+            throw new PlateSourceException("Requested row range is too large for one buffer.");
+
+        var target = dest.Slice(0, (int)targetBytes);
         target.Span.Clear();
 
         lock (_gate)
@@ -410,9 +465,16 @@ public sealed class TiffStripSource : IPlateSource
             _singleStripBuffer ??= DecodeWholeSingleStrip(ct);
 
             var rowBytes = Info.RowBytes;
-            var bytes = count * rowBytes;
-            _singleStripBuffer.AsSpan(y0 * rowBytes, bytes)
-                              .CopyTo(dest.Span.Slice(0, bytes));
+            var start = (long)y0 * rowBytes;
+            var bytes = (long)count * rowBytes;
+
+            if (start + bytes > _singleStripBuffer.LongLength)
+                throw new PlateSourceException("Requested rows lie outside the decoded plate buffer.");
+            if (bytes > int.MaxValue)
+                throw new PlateSourceException("Requested row range is too large for one buffer.");
+
+            _singleStripBuffer.AsSpan((int)start, (int)bytes)
+                              .CopyTo(dest.Span.Slice(0, (int)bytes));
         }
     }
 
@@ -446,7 +508,13 @@ public sealed class TiffStripSource : IPlateSource
 
     /// <summary>Write one row of G4 transitions as packed ink, honouring polarity.</summary>
     private void FillRow(byte[] target, int y, int[] transitions, int transitionCount)
-        => FillRow(target.AsSpan(y * Info.RowBytes, Info.RowBytes), transitions, transitionCount);
+    {
+        var offset = (long)y * Info.RowBytes;
+        if (offset < 0 || offset + Info.RowBytes > target.LongLength)
+            throw new PlateSourceException($"Row {y} lies outside the decoded strip.");
+
+        FillRow(target.AsSpan((int)offset, Info.RowBytes), transitions, transitionCount);
+    }
 
     private void FillRow(Span<byte> row, int[] transitions, int transitionCount)
     {
@@ -508,7 +576,11 @@ public sealed class TiffStripSource : IPlateSource
 
         for (var r = 0; r < rows; r++)
         {
-            var row = buffer.AsSpan(r * rowBytes, rowBytes);
+            var offset = (long)r * rowBytes;
+            if (offset + rowBytes > buffer.LongLength)
+                throw new PlateSourceException($"Row {r} lies outside the decoded buffer.");
+
+            var row = buffer.AsSpan((int)offset, rowBytes);
 
             if (_invert)
                 for (var i = 0; i < row.Length; i++)
@@ -553,11 +625,28 @@ public sealed class TiffStripSource : IPlateSource
 
     public void Dispose()
     {
+        var close = false;
+        lock (_gate)
+        {
+            if (_disposeRequested)
+                return;
+
+            _disposeRequested = true;
+            close = _activeReads == 0;
+        }
+
+        if (close)
+            CloseResources();
+    }
+
+    private void CloseResources()
+    {
         lock (_gate)
         {
             _stream.Dispose();
             _strips.Clear();
             _lru.Clear();
+            _cachedBytes = 0;
             _singleStripBuffer = null;
         }
     }

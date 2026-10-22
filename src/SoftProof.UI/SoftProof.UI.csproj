@@ -4,12 +4,27 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <AssemblyName>SoftProof.UI</AssemblyName>
+    <AssemblyName>SoftProof</AssemblyName>
     <RootNamespace>SoftProof.UI</RootNamespace>
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\SoftProof.ico</ApplicationIcon>
+
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+    <Product>SoftProof</Product>
+    <AssemblyTitle>SoftProof — Prepress Soft Proofing</AssemblyTitle>
+    <Company>tointan-ux</Company>
+    <Description>Prepress soft-proofing, plate inspection and RIP verification</Description>
+    <Copyright>Copyright © 2026 tointan-ux</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\SoftProof.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\SoftProof.Core\SoftProof.Core.csproj" />

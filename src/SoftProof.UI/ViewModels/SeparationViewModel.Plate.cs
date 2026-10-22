@@ -131,7 +131,17 @@ public partial class SeparationViewModel
     
     [ObservableProperty]
     private bool _isInverted;
-    
+
+    [ObservableProperty]
+    private double _opacity = 1.0;
+
+    partial void OnOpacityChanged(double value)
+    {
+        if (Layer != null)
+            Layer.Opacity = value;
+        FlagsChanged?.Invoke();
+    }
+
     partial void OnIsVisibleChanged(bool value)
     {
         if (Layer != null) Layer.Visible = value;

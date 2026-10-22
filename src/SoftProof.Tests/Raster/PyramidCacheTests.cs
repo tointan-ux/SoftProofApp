@@ -38,17 +38,18 @@ public class PyramidCacheTests
         Assert.Equal(2, half.Factor);
         Assert.Equal(50.0, half.InkedPercent(), precision: 1);
 
+        // 5%-80% stays on the base level by design (300 dpi view, never coarser).
         var coarse = pyramid.LevelFor(0.5);
-        Assert.Equal(64, coarse.Width);
+        Assert.Equal(128, coarse.Width);
     }
 
     [Theory]
     [InlineData(1.0, 0)]
     [InlineData(0.75, 0)]
-    [InlineData(0.5, 1)]
-    [InlineData(0.25, 2)]
-    [InlineData(0.125, 3)]
-    [InlineData(0.01, 4)]
+    [InlineData(0.5, 0)]
+    [InlineData(0.25, 0)]
+    [InlineData(0.125, 0)]
+    [InlineData(0.04, 4)]
     public void IndexForZoom_SelectsTheCoarsestLevelThatStillCoversAScreenPixel(
         double zoom, int expected)
     {

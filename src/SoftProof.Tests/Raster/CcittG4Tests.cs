@@ -109,9 +109,9 @@ public class CcittG4Tests
         Assert.True(plates[0].Width < 60000, "the decoded raster must be downsampled");
         Assert.True(plates[0].Height < 73229);
 
-        // The overview decimation the UI uses for "view 150 dpi" and "Overview 1/16".
-        Assert.Equal(16, plates[0].Pyramid!.Base.Factor);
-        Assert.Equal(150, 2400 / plates[0].Pyramid!.Base.Factor);
+        // The overview decimation the UI uses for "view 300 dpi" and "Overview 1/8".
+        Assert.Equal(8, plates[0].Pyramid!.Base.Factor);
+        Assert.Equal(300, 2400 / plates[0].Pyramid!.Base.Factor);
 
         Assert.Contains(warnings, w => w.Contains("decoded"));
         Assert.InRange(plates[0].InkedAreaPercent, 0.0, 60.0);

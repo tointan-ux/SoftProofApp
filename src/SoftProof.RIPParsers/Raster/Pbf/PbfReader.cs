@@ -106,7 +106,7 @@ public static class PbfReader
         {
             for (var y = 0; y < height; y++)
             {
-                var row = y * rowBytes;
+                var row = (long)y * rowBytes;
                 var target = (long)y * width;
                 for (var x = 0; x < width; x++)
                 {
@@ -114,8 +114,8 @@ public static class PbfReader
                     if (index >= raw.Length) break;
 
                     var bit = lsbFirst
-                        ? (raw[index] >> (x & 7)) & 1
-                        : (raw[index] >> (7 - (x & 7))) & 1;
+                        ? (raw[(int)index] >> (x & 7)) & 1
+                        : (raw[(int)index] >> (7 - (x & 7))) & 1;
 
                     var ink = oneIsInk ? bit == 1 : bit == 0;
                     coverage[target + x] = ink ? (byte)255 : (byte)0;

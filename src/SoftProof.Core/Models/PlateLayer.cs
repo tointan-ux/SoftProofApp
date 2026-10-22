@@ -63,6 +63,9 @@ public sealed class PlateLayer
     public bool Visible { get; set; } = true;
     public bool Solo { get; set; }
     public bool Inverted { get; set; }
+
+    /// <summary>Display transparency: 1.0 = fully opaque, 0.0 = invisible.</summary>
+    public double Opacity { get; set; } = 1.0;
     
     /// <summary>Average ink coverage over the whole plate, in percent. Call <see cref="ComputeStats"/> first.</summary>
     public double InkedAreaPercent { get; private set; }

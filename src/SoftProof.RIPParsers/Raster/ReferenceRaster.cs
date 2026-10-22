@@ -38,7 +38,7 @@ public static class ReferenceRaster
                 for (var y = 0; y < height; y++)
                 {
                     var row = accessor.GetRowSpan(y);
-                    var offset = y * width;
+                    var offset = (long)y * width;
                     for (var x = 0; x < width; x++)
                     {
                         var p = row[x];

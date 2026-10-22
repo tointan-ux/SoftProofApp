@@ -21,7 +21,7 @@ public sealed class PlateLoader : IPlateLoader
     /// resolution is scaled by the same factor, so physical measurements stay correct).
     /// A 2400 dpi B1 plate is ~6.5 Gpx; decoding that eagerly would exhaust memory.
     /// </summary>
-    public int MaxPixelsPerPlate { get; init; } = 60_000_000;
+    public int MaxPixelsPerPlate { get; init; } = 120_000_000;
 
     public bool CanLoad(PrintJob job) => job.Format is
         RipFormat.HarlequinPageBuffer or RipFormat.OneBitTiffSeparations or RipFormat.MultiChannelTiff;

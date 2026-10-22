@@ -1,6 +1,8 @@
-bin/
+﻿bin/
 obj/
 bin2/
 obj2/
 .vs/
 *.user
+publish/
+dist/

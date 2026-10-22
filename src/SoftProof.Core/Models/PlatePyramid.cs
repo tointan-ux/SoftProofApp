@@ -53,7 +53,8 @@ public sealed class PlatePyramid
     /// <summary>Coarsest level whose width is still at least <paramref name="minimumWidth"/>.</summary>
     public PyramidLevel LevelFor(double scale)
     {
-        if (scale >= 1)
+        // Keep the 300 dpi base level for 5%-100%; only tiny thumbnails step down.
+        if (scale >= 0.05)
             return Levels[0];
 
         var target = Math.Max(1, (int)Math.Round(Width * scale));
@@ -74,7 +75,9 @@ public sealed class PlatePyramid
     /// </summary>
     public int IndexForZoom(double zoom)
     {
-        if (zoom >= 1 || Levels.Count == 1)
+        // Never drop below the base level (300 dpi) while the plate is still legible on screen:
+        // 5%-80% must keep the 300 dpi view rather than stepping down to 150/75 dpi.
+        if (zoom >= 0.05 || Levels.Count == 1)
             return 0;
 
         var index = (int)Math.Floor(Math.Log2(1.0 / Math.Max(zoom, 1e-6)));

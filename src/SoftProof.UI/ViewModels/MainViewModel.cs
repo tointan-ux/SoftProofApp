@@ -9,6 +9,7 @@ using SoftProof.Core.Analysis;
 using SoftProof.Core.Models;
 using SoftProof.Core.Services;
 using SoftProof.RIPParsers;
+using SoftProof.RIPParsers.Raster.Pyramid;
 using SoftProof.Viewer;
 using SoftProof.Tools;
 using SoftProof.UI.Services;
@@ -20,6 +21,9 @@ namespace SoftProof.UI.ViewModels;
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
+    // Synthetic IDG / densitometer probes are generated at a bounded size. Using the native
+    // plate size here tried to allocate several gigabytes and overflowed y * width.
+    private const int SyntheticProbeSize = 1024;
     private readonly RipParserRegistry _parserRegistry;
     private readonly IFileDialogService _fileDialogs;
     private readonly IColorEngine _colorEngine;
@@ -27,6 +31,7 @@ public partial class MainViewModel : ObservableObject
     private readonly DensitometerTool _densitometer;
     private readonly ColorMeasurementTool _colorMeasurement;
     private readonly IPlateLoader _plateLoader;
+    private readonly PyramidCache _pyramidCache;
     
     [ObservableProperty]
     private PrintJob? _currentJob;
@@ -88,11 +93,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _showContentOverlay;
 
-    [ObservableProperty]
-    private bool _blackOverprint = true;
+        [ObservableProperty]
+    private bool _simulateMetallicPaper;
 
     [ObservableProperty]
-    private bool _simulateMetallicPaper;
+    private bool _useCustomSubstrate;
+
+    [ObservableProperty]
+    private Color _substrateColor = Colors.White;
 
     [ObservableProperty]
     private double _backSideOpacity;
@@ -115,15 +123,45 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Segmented control needs both sides of the substrate choice as bindable booleans.</summary>
     public bool OpaquePaper
     {
-        get => !SimulateMetallicPaper;
+        get => !SimulateMetallicPaper && !UseCustomSubstrate;
         set
         {
             if (value)
+            {
                 SimulateMetallicPaper = false;
+                UseCustomSubstrate = false;
+            }
         }
     }
 
-    partial void OnSimulateMetallicPaperChanged(bool value) => OnPropertyChanged(nameof(OpaquePaper));
+    /// <summary>Paper tint fed to the viewer (and native detail) for the current substrate choice.</summary>
+    public (float R, float G, float B) SubstrateRgb => UseCustomSubstrate
+        ? (SubstrateColor.R / 255f, SubstrateColor.G / 255f, SubstrateColor.B / 255f)
+        : SimulateMetallicPaper ? (0.80f, 0.79f, 0.74f) : (1f, 1f, 1f);
+
+    partial void OnSimulateMetallicPaperChanged(bool value)
+    {
+        if (value)
+            UseCustomSubstrate = false;
+        OnPropertyChanged(nameof(OpaquePaper));
+        OnPropertyChanged(nameof(SubstrateRgb));
+    }
+
+    partial void OnUseCustomSubstrateChanged(bool value)
+    {
+        if (value)
+            SimulateMetallicPaper = false;
+        OnPropertyChanged(nameof(OpaquePaper));
+        OnPropertyChanged(nameof(SubstrateRgb));
+    }
+
+    public Brush SubstrateBrush => new SolidColorBrush(SubstrateColor);
+
+    partial void OnSubstrateColorChanged(Color value)
+    {
+        OnPropertyChanged(nameof(SubstrateRgb));
+        OnPropertyChanged(nameof(SubstrateBrush));
+    }
 
     partial void OnRotationDegreesChanged(int value)
     {
@@ -268,6 +306,19 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _autoRefresh = true;
 
+    /// <summary>Open the newest finished file from a watched folder automatically.</summary>
+    [ObservableProperty]
+    private bool _autoOpenNewFiles = true;
+
+    /// <summary>Raised when the watched folder set changes (job opened, folder added).</summary>
+    public event EventHandler<IReadOnlyList<string>>? WatchFoldersChanged;
+
+    public IReadOnlyList<string> WatchFolders =>
+        RipQueueService.FoldersFromEnvironment(CurrentJob?.FilePath)
+            .Concat(_extraQueueFolders)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
     public ObservableCollectionEx<RipQueueEntry> RipQueue { get; } = new();
 
     private readonly List<string> _extraQueueFolders = new();
@@ -293,10 +344,12 @@ public partial class MainViewModel : ObservableObject
     {
         var folders = RipQueueService.FoldersFromEnvironment(CurrentJob?.FilePath)
                                          .Concat(_extraQueueFolders)
-                                         .Distinct(StringComparer.OrdinalIgnoreCase);
+                                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                                         .ToArray();
         var service = new RipQueueService(folders);
         RipQueue.ReplaceAll(service.Scan());
         QueueFolders = string.Join("  ·  ", service.Folders);
+        WatchFoldersChanged?.Invoke(this, folders);
 
         var loadedPath = CurrentJob?.FilePath;
         foreach (var entry in RipQueue)
@@ -323,7 +376,8 @@ public partial class MainViewModel : ObservableObject
         InverseDotGainTool idgTool,
         DensitometerTool densitometer,
         ColorMeasurementTool colorMeasurement,
-        IPlateLoader plateLoader)
+        IPlateLoader plateLoader,
+        PyramidCache pyramidCache)
     {
         _parserRegistry = parserRegistry;
         _fileDialogs = fileDialogs;
@@ -332,6 +386,7 @@ public partial class MainViewModel : ObservableObject
         _densitometer = densitometer;
         _colorMeasurement = colorMeasurement;
         _plateLoader = plateLoader;
+        _pyramidCache = pyramidCache;
         
         LoadRecentFiles();
         LoadUiState();
@@ -477,6 +532,41 @@ public partial class MainViewModel : ObservableObject
         SeparationLoaded?.Invoke(this, new SeparationLoadEventArgs(separation));
     }
     
+    /// <summary>Delete the preview-pyramid cache; it is safe to rebuild and can grow to 512 MB.</summary>
+    [RelayCommand]
+    private void ClearPyramidCache()
+    {
+        var root = _pyramidCache.RootDirectory;
+        if (!Directory.Exists(root))
+        {
+            StatusText = "Pyramid cache is already empty.";
+            return;
+        }
+
+        long bytes = 0;
+        var files = 0;
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            try
+            {
+                bytes += new FileInfo(file).Length;
+                File.Delete(file);
+                files++;
+            }
+            catch (IOException)
+            {
+                // A cache file in use is skipped; it will be reused next time.
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        StatusText = files == 0 && bytes == 0
+            ? "Pyramid cache is already empty."
+            : $"Cleared pyramid cache: {files} file(s), {bytes / (1024.0 * 1024.0):0.0} MB.";
+    }
+
     [RelayCommand]
     private void ToggleSoftProofing()
     {
@@ -499,7 +589,7 @@ public partial class MainViewModel : ObservableObject
             if (sep == null) return;
             
             // Simulate separation data
-            var testData = GenerateTestSeparationData(CurrentJob.Metadata.Width, CurrentJob.Metadata.Height);
+            var testData = GenerateTestSeparationData(SyntheticProbeSize, SyntheticProbeSize);
             
             var parameters = new IdgParameters
             {
@@ -512,10 +602,10 @@ public partial class MainViewModel : ObservableObject
             };
             
             // Apply IDG
-            var result = _idgTool.ApplyIdgSimulation(testData, CurrentJob.Metadata.Width, CurrentJob.Metadata.Height, parameters);
+            var result = _idgTool.ApplyIdgSimulation(testData, SyntheticProbeSize, SyntheticProbeSize, parameters);
             
             // Analyze quality
-            StochasticAnalysis = _idgTool.AnalyzeStochasticQuality(testData, CurrentJob.Metadata.Width, CurrentJob.Metadata.Height);
+            StochasticAnalysis = _idgTool.AnalyzeStochasticQuality(testData, SyntheticProbeSize, SyntheticProbeSize);
             
             StatusText = $"IDG Analysis complete. Quality: {StochasticAnalysis.QualityScore:F1}/100";
             IdgAnalysisCompleted?.Invoke(this, StochasticAnalysis);
@@ -534,8 +624,8 @@ public partial class MainViewModel : ObservableObject
         // Get measurement region from viewer (center 10x10mm)
         var region = new MeasurementRegion
         {
-            X = CurrentJob.Metadata.Width / 2 - 500,
-            Y = CurrentJob.Metadata.Height / 2 - 500,
+            X = SyntheticProbeSize / 2 - 500,
+            Y = SyntheticProbeSize / 2 - 500,
             Width = 1000,
             Height = 1000,
             Name = "Center"
@@ -544,8 +634,8 @@ public partial class MainViewModel : ObservableObject
         var sep = CurrentJob.Separations.FirstOrDefault(s => s.Color == ActiveSeparation);
         if (sep == null) return;
         
-        var testData = GenerateTestSeparationData(CurrentJob.Metadata.Width, CurrentJob.Metadata.Height);
-        LastMeasurement = _densitometer.MeasureDensity(testData, CurrentJob.Metadata.Width, CurrentJob.Metadata.Height, region);
+        var testData = GenerateTestSeparationData(SyntheticProbeSize, SyntheticProbeSize);
+        LastMeasurement = _densitometer.MeasureDensity(testData, SyntheticProbeSize, SyntheticProbeSize, region);
         
         StatusText = $"Density: {LastMeasurement.Density:F3}";
     }
@@ -577,7 +667,7 @@ public partial class MainViewModel : ObservableObject
     private byte[] GenerateTestSeparationData(int width, int height)
     {
         // Generate stochastic screening test pattern
-        var data = new byte[(width * height + 7) / 8];
+        var data = new byte[((long)width * height + 7) / 8];
         var random = new Random(42); // Deterministic
         
         for (int y = 0; y < height; y++)
@@ -926,7 +1016,24 @@ public partial class SeparationViewModel : ObservableObject
     }
     
     public Separation Separation { get; }
-    
+
+    /// <summary>Source file name, middle-truncated so the leading job name and trailing
+    /// separation suffix both stay visible in the inked-area row.</summary>
+    public string FileName
+    {
+        get
+        {
+            var name = string.IsNullOrWhiteSpace(Separation.FilePath)
+                ? Name
+                : Path.GetFileName(Separation.FilePath);
+
+            const int max = 40;
+            const int head = 18;
+            const int tail = 18;
+            return name.Length <= max ? name : name[..head] + "…" + name[^tail..];
+        }
+    }
+
     [ObservableProperty]
     private string _name;
     

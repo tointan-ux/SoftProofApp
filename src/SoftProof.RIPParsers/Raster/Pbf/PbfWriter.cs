@@ -130,7 +130,7 @@ public static class PbfWriter
         var packed = new byte[(long)rowBytes * height];
         for (var y = 0; y < height; y++)
         {
-            var row = y * rowBytes;
+            var row = (long)y * rowBytes;
             var source = (long)y * width;
             for (var x = 0; x < width; x++)
             {
@@ -139,7 +139,7 @@ public static class PbfWriter
                 if (!bit) continue;
 
                 var index = row + (x >> 3);
-                packed[index] |= lsbFirst
+                packed[(int)index] |= lsbFirst
                     ? (byte)(1 << (x & 7))
                     : (byte)(1 << (7 - (x & 7)));
             }

@@ -2,9 +2,13 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using SoftProof.Core.Models;
 
 namespace SoftProof.Viewer;
+
+/// <summary>A native-resolution request: image region (base-level pixels) and decimation factor (1, 2, 4).</summary>
+public sealed record DetailRequest(Rect Region, int Factor);
 
 /// <summary>Active mouse tool in the viewer.</summary>
 public enum ViewerTool
@@ -78,12 +82,19 @@ public class PlateViewer : FrameworkElement
     private int _levelIndex;
     private int _renderWidth;
     private int _renderHeight;
+    private int _renderStep = 1;        // base pixels per level pixel
+    private int _renderLevelWidth;      // level bitmap width (sampling stride)
+    private int _renderLevelHeight;
+    private int _renderX0, _renderY0;    // level-space origin of the rendered window
+    private Rect _renderRect = Rect.Empty; // base-space rect covered by _bitmap
     private bool _switchingLevel;
 
     // Native (full-resolution) detail layer, supplied by the host when the user zooms past the
     // coarse level. The viewer only knows about a bitmap and the image rectangle it covers.
     private int _nativeFactor = 1;
+    private int _detailFactor = 1;
     private WriteableBitmap? _detailBitmap;
+    private Rect _requestedDetailRegion = Rect.Empty;
     private Rect _detailRect = Rect.Empty;
     private bool _refining;
 
@@ -93,12 +104,15 @@ public class PlateViewer : FrameworkElement
 
     // Simulation and orientation.
     private readonly PlateOrientation _orientation = new();
-    private bool _blackOverprint = true;
     private bool _simulateMetallicPaper;
+    private Color _paperColor = Colors.White;
     private double _backSideOpacity;
 
     /// <summary>Raised when the visible region needs native-resolution pixels.</summary>
-    public event EventHandler<Rect>? DetailRequested;
+    public event EventHandler<DetailRequest>? DetailRequested;
+
+    /// <summary>Layers currently shown (used by the host to decode native tiles per pane).</summary>
+    public IReadOnlyList<PlateLayer> Plates => _plates;
     
     private Matrix _view = Matrix.Identity;
     private bool _fitPending;
@@ -107,12 +121,16 @@ public class PlateViewer : FrameworkElement
     private Point _panLast;
     
     private bool _measuring;
+    private bool _selecting;
+    private Point? _selectStartScreen;
+    private Point? _selectCurrentScreen;
     private bool _measureRectangleMode;
     private bool _measureRectangle;
     private Point? _caliperStart;
     private Point? _caliperEnd;
     
     private Point? _cursorScreen;
+    private Point? _lastCanvasPoint;
     private ViewerTool _tool = ViewerTool.Select;
     private PlateViewMode _viewMode = PlateViewMode.Composite;
     private int _progressiveCount = int.MaxValue;
@@ -122,7 +140,26 @@ public class PlateViewer : FrameworkElement
         Focusable = true;
         ClipToBounds = true;
         Cursor = Cursors.Arrow;
+
+        _detailDebounce.Tick += (_, _) =>
+        {
+            _detailDebounce.Stop();
+            MaybeRequestDetail();
+        };
+
+        _compositeDebounce.Tick += (_, _) =>
+        {
+            _compositeDebounce.Stop();
+            if (!_switchingLevel)
+                Recomposite();
+        };
     }
+
+    // Full-resolution requests are debounced so dragging/zooming stays on the cached preview.
+    private readonly DispatcherTimer _detailDebounce = new() { Interval = TimeSpan.FromMilliseconds(150) };
+    private bool _suppressSchedule;
+    // Re-window the composite shortly after the view settles (never a full-image canvas).
+    private readonly DispatcherTimer _compositeDebounce = new() { Interval = TimeSpan.FromMilliseconds(60) };
     
     /// <summary>Raised whenever zoom or pan changes.</summary>
     public event EventHandler? ViewChanged;
@@ -186,7 +223,7 @@ public class PlateViewer : FrameworkElement
         {
             if (_viewMode == value) return;
             _viewMode = value;
-            Recomposite();
+            Refresh();
         }
     }
     
@@ -198,8 +235,9 @@ public class PlateViewer : FrameworkElement
         {
             if (_progressiveCount == value) return;
             _progressiveCount = value;
+
             if (_viewMode == PlateViewMode.Progressive)
-                Recomposite();
+                Refresh();
         }
     }
     
@@ -292,22 +330,75 @@ public class PlateViewer : FrameworkElement
     private void EnsureLevelBitmap()
     {
         var level = _plates.Select(p => LevelOf(p, _levelIndex)).FirstOrDefault(l => l is not null);
-        _renderWidth = level?.Width ?? _width;
-        _renderHeight = level?.Height ?? _height;
+        _renderLevelWidth = level?.Width ?? _width;
+        _renderLevelHeight = level?.Height ?? _height;
+        _renderStep = 1 << Math.Max(0, _levelIndex);
+        PrepareRenderRect();
+    }
 
-        if (_renderWidth <= 0 || _renderHeight <= 0)
+    /// <summary>
+    /// Size the composite to the visible viewport (plus a margin), never to the full plate.
+    /// The bitmap is a window into the level coverage, exactly like a tile canvas.
+    /// </summary>
+    private void PrepareRenderRect()
+    {
+        if (_width <= 0 || _height <= 0 || _renderLevelWidth <= 0 || _renderLevelHeight <= 0)
         {
             _bitmap = null;
             _buffer = null;
+            _renderRect = Rect.Empty;
             return;
         }
 
-        _buffer = new byte[checked(_renderWidth * _renderHeight * 4)];
-        _bitmap = new WriteableBitmap(_renderWidth, _renderHeight, 96, 96, PixelFormats.Bgra32, null);
+        // Full-level composite (known-good renderer): the viewport-window experiment painted
+        // white over inked areas at 1:1, so the canvas covers the whole level again.
+        var w = _renderLevelWidth;
+        var h = _renderLevelHeight;
+
+        if (_bitmap is null || _renderWidth != w || _renderHeight != h)
+        {
+            _buffer = new byte[checked(w * h * 4)];
+            _bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
+        }
+
+        _renderWidth = w;
+        _renderHeight = h;
+        _renderX0 = 0;
+        _renderY0 = 0;
+        _renderRect = new Rect(0, 0, _width, _height);
     }
-    
+
     /// <summary>Re-composite after plate flags (visible / solo / inverted) changed.</summary>
-    public void Refresh() => Recomposite();
+    /// <summary>Recomposite from the current plate state and re-decode the native detail.</summary>
+    public void Refresh()
+    {
+        // Manual re-composite bypasses the debounce: draw the 300 dpi base level and fetch
+        // full resolution for the viewport now.
+        _detailDebounce.Stop();
+        _detailBitmap = null;
+        _detailRect = Rect.Empty;
+        _requestedDetailRegion = Rect.Empty;
+
+        if (_width > 0 && _levelIndex != 0)
+        {
+            _levelIndex = 0;
+            EnsureLevelBitmap();
+        }
+
+        _suppressSchedule = true;
+        try
+        {
+            Recomposite();
+        }
+        finally
+        {
+            _suppressSchedule = false;
+        }
+
+        _detailDebounce.Stop();
+        _requestedDetailRegion = Rect.Empty;
+        MaybeRequestDetail();
+    }
     
     private List<PlateLayer> GetActiveLayers()
     {
@@ -327,6 +418,7 @@ public class PlateViewer : FrameworkElement
     
     private void Recomposite()
     {
+        PrepareRenderRect();
         if (_bitmap == null || _buffer == null || _renderWidth <= 0 || _renderHeight <= 0)
         {
             InvalidateVisual();
@@ -350,50 +442,36 @@ public class PlateViewer : FrameworkElement
             kb[i] = 1f - layers[i].B / 255f;
         }
         
-        var isBlack = new bool[n];
         var isWhite = new bool[n];
+        var opacity = new float[n];
         for (var i = 0; i < n; i++)
         {
-            isBlack[i] = layers[i].Separation.Color == SeparationColor.ProcessBlack;
             isWhite[i] = layers[i].Separation.Color == SeparationColor.White ||
                          layers[i].Name.Contains("white", StringComparison.OrdinalIgnoreCase);
+            opacity[i] = (float)Math.Clamp(layers[i].Opacity, 0.0, 1.0);
         }
 
         var film = _viewMode == PlateViewMode.FilmBlackWhite;
-        var knockout = !_blackOverprint;
-        var metallic = _simulateMetallicPaper;
-        var paperR = metallic ? 0.80f : 1f;
-        var paperG = metallic ? 0.79f : 1f;
-        var paperB = metallic ? 0.74f : 1f;
+        var paperR = _paperColor.R / 255f;
+        var paperG = _paperColor.G / 255f;
+        var paperB = _paperColor.B / 255f;
 
         var buffer = _buffer;
         var w = _renderWidth;
         
         Parallel.For(0, _renderHeight, y =>
         {
-            var rowStart = y * w;
+            var rowStart = (y + _renderY0) * _renderLevelWidth + _renderX0;
             for (var x = 0; x < w; x++)
             {
                 var idx = rowStart + x;
                 float r = paperR, g = paperG, b = paperB;
 
-                // Knockout needs the black coverage before CMY is applied; overprint does not.
-                var kCover = 0f;
-                if (knockout)
-                {
-                    for (var i = 0; i < n; i++)
-                    {
-                        if (!isBlack[i]) continue;
-                        var kc = coverage[i][idx] * (1f / 255f);
-                        if (inverted[i]) kc = 1f - kc;
-                        if (kc > kCover) kCover = kc;
-                    }
-                }
-
                 for (var i = 0; i < n; i++)
                 {
                     var c = coverage[i][idx] * (1f / 255f);
                     if (inverted[i]) c = 1f - c;
+                    c *= opacity[i];
                     if (c <= 0f) continue;
 
                     if (isWhite[i])
@@ -404,9 +482,6 @@ public class PlateViewer : FrameworkElement
                         b += (1f - b) * c;
                         continue;
                     }
-
-                    if (knockout && !isBlack[i])
-                        c *= 1f - kCover;
 
                     if (c <= 0f) continue;
 
@@ -423,7 +498,7 @@ public class PlateViewer : FrameworkElement
                     }
                 }
                 
-                var o = idx * 4;
+                var o = (y * w + x) * 4;
                 buffer[o] = (byte)(b * 255f + 0.5f);
                 buffer[o + 1] = (byte)(g * 255f + 0.5f);
                 buffer[o + 2] = (byte)(r * 255f + 0.5f);
@@ -480,6 +555,10 @@ public class PlateViewer : FrameworkElement
     /// <summary>Plate decimation of the base level (1 = the base is native resolution).</summary>
     public int NativeFactor => _nativeFactor;
 
+    /// <summary>Decimation of the detail bitmap on screen (1 = native, 2 = half, 4 = quarter).</summary>
+    public int ActiveDetailFactor =>
+        _detailBitmap is not null && !_detailRect.IsEmpty ? Math.Max(1, _detailFactor) : 1;
+
     /// <summary>Zoom relative to native pixels: 1.0 = one plate pixel per screen pixel.</summary>
     public double NativeZoom => Zoom / Math.Max(1, _nativeFactor);
 
@@ -503,11 +582,29 @@ public class PlateViewer : FrameworkElement
 
     /// <summary>True when native-resolution pixels are covering the viewport.</summary>
     public bool ShowsNativePixels =>
-        _detailBitmap is not null && !_detailRect.IsEmpty && _detailRect.Contains(VisibleImageRect);
+        _detailFactor == 1 && _detailBitmap is not null && !_detailRect.IsEmpty &&
+        _detailRect.Contains(VisibleImageRect);
 
     /// <summary>Set the zoom relative to native pixels (1.0 = 100% of the plate).</summary>
-    public void SetNativeZoom(double nativeZoom) =>
-        SetZoom(nativeZoom * Math.Max(1, _nativeFactor));
+    public void SetNativeZoom(double nativeZoom, Point? anchor = null) =>
+        SetZoom(nativeZoom * Math.Max(1, _nativeFactor), anchor);
+
+    /// <summary>Zoom to a native scale at the pointed image location (or the view centre).</summary>
+    public void ZoomNativeTo(double nativeZoom)
+    {
+        if (ActualWidth <= 0 || ActualHeight <= 0)
+            return;
+
+        var target = nativeZoom * Math.Max(1, _nativeFactor);
+        var p = Mouse.GetPosition(this);
+        var inside = p.X >= 0 && p.Y >= 0 && p.X <= ActualWidth && p.Y <= ActualHeight;
+
+        if (!inside)
+            p = _lastCanvasPoint ?? new Point(ActualWidth / 2, ActualHeight / 2);
+
+        var image = ScreenToImage(p);
+        SetViewCenter(image.X, image.Y, target);
+    }
 
     /// <summary>Rotate/flip state; zoom and pan stay a separate pure-scale matrix.</summary>
     public PlateOrientation Orientation => _orientation;
@@ -516,17 +613,6 @@ public class PlateViewer : FrameworkElement
     /// True keeps process inks under black (overprint). False knocks the underlying inks out
     /// where black is solid — the difference a trap actually has to survive.
     /// </summary>
-    public bool BlackOverprint
-    {
-        get => _blackOverprint;
-        set
-        {
-            if (_blackOverprint == value) return;
-            _blackOverprint = value;
-            Recomposite();
-        }
-    }
-
     /// <summary>Metallic stock: dull silver paper, with white ink printed opaquely on top.</summary>
     public bool SimulateMetallicPaper
     {
@@ -535,7 +621,19 @@ public class PlateViewer : FrameworkElement
         {
             if (_simulateMetallicPaper == value) return;
             _simulateMetallicPaper = value;
-            Recomposite();
+            Refresh();
+        }
+    }
+
+    /// <summary>Substrate (paper) tint used by the composite and the native detail.</summary>
+    public Color PaperColor
+    {
+        get => _paperColor;
+        set
+        {
+            if (_paperColor == value) return;
+            _paperColor = value;
+            Refresh();
         }
     }
 
@@ -553,7 +651,7 @@ public class PlateViewer : FrameworkElement
     }
 
     /// <summary>Native detail cannot honour the simulation modes yet; hide it rather than lie.</summary>
-    public bool SimulationActive => !_blackOverprint || _simulateMetallicPaper;
+    public bool SimulationActive => _simulateMetallicPaper;
 
     public string OrientationLabel => _orientation.Label();
 
@@ -632,19 +730,99 @@ public class PlateViewer : FrameworkElement
     {
         _detailBitmap = bitmap is null ? null : new WriteableBitmap(bitmap);
         _detailRect = bitmap is null ? Rect.Empty : imageRect;
+        _requestedDetailRegion = Rect.Empty;
         _refining = false;
+        InvalidateVisual();
+        // Let the host refresh the "view 1200 dpi / Native pixels" readout.
+        ViewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Paint a partially decoded bitmap over the low-resolution preview. Unpainted areas stay
+    /// transparent so the cached base image remains visible underneath.
+    /// </summary>
+    public void SetDetailProgress(BitmapSource? bitmap, Rect imageRect)
+    {
+        _detailBitmap = bitmap is null ? null : new WriteableBitmap(bitmap);
+        _detailRect = bitmap is null ? Rect.Empty : imageRect;
         InvalidateVisual();
     }
 
-    /// <summary>Ask for native pixels when the view is close to, or past, 1:1.</summary>
+    /// <summary>Re-evaluate whether native detail is needed now (visibility toggles, etc.).</summary>
+    public void RefreshDetail()
+    {
+        _requestedDetailRegion = Rect.Empty;
+        MaybeRequestDetail();
+    }
+
+    /// <summary>
+    /// While the user drags or zooms, keep the fast cached preview and only ask for native
+    /// tiles once the view has been still for the debounce interval.
+    /// </summary>
+    private void ScheduleDetailRequest()
+    {
+        if (_suppressSchedule)
+            return;
+
+        _detailDebounce.Stop();
+
+        if (_width == 0)
+            return;
+
+        var level = DetailLevelForZoom();
+        var factor = 1 << level;
+        var visible = VisibleImageRect;
+
+        // A sync from the compare pane can raise ViewChanged without moving this view; keep the
+        // native bitmap we already have instead of dropping and re-requesting it.
+        if (_detailBitmap is not null && _detailFactor == factor &&
+            !visible.IsEmpty && _detailRect.Contains(visible))
+            return;
+
+        if (level >= 3)
+        {
+            _refining = false;
+            _detailBitmap = null;
+            _detailRect = Rect.Empty;
+            _requestedDetailRegion = Rect.Empty;
+            InvalidateVisual();
+            return;
+        }
+
+        // Drop stale native pixels so interaction shows the overview/pyramid preview.
+        _detailBitmap = null;
+        _detailRect = Rect.Empty;
+        _requestedDetailRegion = Rect.Empty;
+        _refining = true;
+        InvalidateVisual();
+
+        _detailDebounce.Start();
+    }
+
+    /// <summary>
+    /// Pyramid level for the current zoom: 0 = native 2400 dpi, 1 = 1200 dpi, 2 = 600 dpi,
+    /// 3 = the 300 dpi base bitmap (no tiles needed).
+    /// </summary>
+    private int DetailLevelForZoom()
+    {
+        // scale = screen px per native plate px; level = floor(log2(1 / scale)).
+        // 2400 dpi base pyramid has levels 0..3 (2400 / 1200 / 600 / 300 dpi).
+        var scale = NativeZoom;
+        var level = scale >= 1.0 ? 0 : (int)Math.Floor(Math.Log2(1.0 / Math.Max(scale, 1e-6)));
+        return Math.Clamp(level, 0, 3); // pyramid.MaxLevel = 3 (base is 1/8 = 300 dpi)
+    }
+
+    /// <summary>Ask for the best tile level for the current zoom.</summary>
     private void MaybeRequestDetail()
     {
         if (_width == 0 || _nativeFactor <= 1)
             return;
 
-        if (NativeZoom < 0.75)
+        var level = DetailLevelForZoom();
+        if (level >= 3)
         {
             _refining = false;
+            _requestedDetailRegion = Rect.Empty;
             if (_detailBitmap is not null)
             {
                 _detailBitmap = null;
@@ -653,8 +831,15 @@ public class PlateViewer : FrameworkElement
             return;
         }
 
+        var factor = 1 << level;
         var visible = VisibleImageRect;
-        if (visible.IsEmpty || (_detailBitmap is not null && _detailRect.Contains(visible)))
+        if (visible.IsEmpty ||
+            (_detailBitmap is not null && _detailFactor == factor && _detailRect.Contains(visible)))
+            return;
+
+        // A request is already in flight for a region that still covers this view. Re-firing on
+        // every mouse move caused thousands of cancelled decodes and multi-gigabyte churn.
+        if (!_requestedDetailRegion.IsEmpty && _requestedDetailRegion.Contains(visible))
             return;
 
         // Decode a margin around the viewport so a small pan does not immediately re-decode.
@@ -667,8 +852,10 @@ public class PlateViewer : FrameworkElement
         if (region.Width < 1 || region.Height < 1)
             return;
 
+        _requestedDetailRegion = region;
+        _detailFactor = factor;
         IsRefining = true;
-        DetailRequested?.Invoke(this, region);
+        DetailRequested?.Invoke(this, new DetailRequest(region, factor));
     }
 
     /// <summary>Visible part of the page in image pixels; empty when nothing is loaded.</summary>
@@ -707,18 +894,63 @@ public class PlateViewer : FrameworkElement
         return (centre.X, centre.Y, Zoom);
     }
     
+    /// <summary>Keep at least a strip of the page inside the viewport.</summary>
+    private void ClampPan()
+    {
+        if (_width <= 0 || ActualWidth <= 0 || ActualHeight <= 0)
+            return;
+
+        var tl = ImageToScreen(new Point(0, 0));
+        var br = ImageToScreen(new Point(_width, _height));
+        var screen = new Rect(tl, br);
+
+        var dx = 0.0;
+        var dy = 0.0;
+
+        // When the page is larger than the viewport it must cover it (no dead background);
+        // when it is smaller, keep it centred.
+        if (screen.Width >= ActualWidth)
+        {
+            if (screen.Left > 0) dx = -screen.Left;
+            else if (screen.Right < ActualWidth) dx = ActualWidth - screen.Right;
+        }
+        else
+        {
+            dx = (ActualWidth - screen.Width) / 2 - screen.Left;
+        }
+
+        if (screen.Height >= ActualHeight)
+        {
+            if (screen.Top > 0) dy = -screen.Top;
+            else if (screen.Bottom < ActualHeight) dy = ActualHeight - screen.Bottom;
+        }
+        else
+        {
+            dy = (ActualHeight - screen.Height) / 2 - screen.Top;
+        }
+
+        if (dx != 0 || dy != 0)
+            _view.Translate(dx, dy);
+    }
+
     private void NotifyViewChanged()
     {
         // Nearest-neighbour when magnified so individual pixels stay crisp.
         // Crisp squares only when the pixels being drawn are the plate's own; a coarse level
         // enlarged with nearest-neighbour would just look like stair-stepped mush.
+        // Nearest only for exact native 1:1-or-better dot inspection; every decimated level and
+        // composite preview is upscaled with high-quality smoothing (bicubic-class).
+        var crispNative = DetailLevelForZoom() == 0 && NativeZoom >= 1.0;
         RenderOptions.SetBitmapScalingMode(this,
-            ShowsNativePixels || Zoom >= 4.0 ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.Linear);
+            crispNative ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.HighQuality);
 
         // Zoomed out far enough that a coarser pyramid level covers more than a screen pixel?
         // Switch to it, so panning composites a fraction of the pixels.
+        ClampPan();
         ApplyZoomLevel(force: false);
-        MaybeRequestDetail();
+        _compositeDebounce.Stop();
+        _compositeDebounce.Start();
+        ScheduleDetailRequest();
 
         InvalidateVisual();
         ViewChanged?.Invoke(this, EventArgs.Empty);
@@ -765,6 +997,14 @@ public class PlateViewer : FrameworkElement
             CaptureMouse();
             e.Handled = true;
         }
+        else if (e.ChangedButton == MouseButton.Left && _tool == ViewerTool.Select)
+        {
+            _selecting = true;
+            _selectStartScreen = _selectCurrentScreen = pos;
+            CaptureMouse();
+            InvalidateVisual();
+            e.Handled = true;
+        }
         else if (e.ChangedButton == MouseButton.Left && _tool == ViewerTool.Measure)
         {
             _measuring = true;
@@ -782,12 +1022,19 @@ public class PlateViewer : FrameworkElement
         base.OnMouseMove(e);
         var pos = e.GetPosition(this);
         _cursorScreen = pos;
+        if (pos.X >= 0 && pos.Y >= 0 && pos.X <= ActualWidth && pos.Y <= ActualHeight)
+            _lastCanvasPoint = pos;
         
         if (_panning)
         {
             _view.Translate(pos.X - _panLast.X, pos.Y - _panLast.Y);
             _panLast = pos;
             NotifyViewChanged();
+        }
+        else if (_selecting)
+        {
+            _selectCurrentScreen = pos;
+            InvalidateVisual();
         }
         else if (_measuring)
         {
@@ -808,6 +1055,15 @@ public class PlateViewer : FrameworkElement
     {
         base.OnMouseUp(e);
         
+        if (_selecting)
+        {
+            _selecting = false;
+            _selectCurrentScreen = e.GetPosition(this);
+            ZoomToSelection();
+            _selectStartScreen = _selectCurrentScreen = null;
+            InvalidateVisual();
+        }
+
         if (_measuring)
         {
             _measuring = false;
@@ -828,6 +1084,31 @@ public class PlateViewer : FrameworkElement
         InvalidateVisual();
     }
     
+    /// <summary>Fit the marquee rectangle drawn with the Select tool into the viewport.</summary>
+    private void ZoomToSelection()
+    {
+        if (_selectStartScreen is not { } a || _selectCurrentScreen is not { } b)
+            return;
+
+        var w = Math.Abs(b.X - a.X);
+        var h = Math.Abs(b.Y - a.Y);
+        if (w < 8 || h < 8)
+            return; // treat as a click, not a marquee
+
+        var p1 = ScreenToImage(a);
+        var p2 = ScreenToImage(b);
+        var rect = new Rect(
+            new Point(Math.Min(p1.X, p2.X), Math.Min(p1.Y, p2.Y)),
+            new Point(Math.Max(p1.X, p2.X), Math.Max(p1.Y, p2.Y)));
+
+        if (rect.Width < 1 || rect.Height < 1)
+            return;
+
+        var scale = Math.Min(ActualWidth / rect.Width, ActualHeight / rect.Height);
+        scale = Math.Clamp(scale, MinZoom, MaxZoom);
+        SetViewCenter(rect.X + rect.Width / 2, rect.Y + rect.Height / 2, scale);
+    }
+
     private void RaiseMeasurement(bool completed)
     {
         if (_caliperStart is not { } s || _caliperEnd is not { } en)
@@ -863,8 +1144,8 @@ public class PlateViewer : FrameworkElement
         drawMatrix.Append(_view);
 
         dc.PushTransform(new MatrixTransform(drawMatrix));
-        dc.DrawImage(_bitmap, new Rect(0, 0, _width, _height));
-        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive && _viewMode != PlateViewMode.Progressive)
+        dc.DrawImage(_bitmap, _renderRect);
+        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
             dc.DrawImage(_detailBitmap, _detailRect);
 
         // Back side mirrored over the front: the classic registration/bleed-through check.
@@ -881,7 +1162,7 @@ public class PlateViewer : FrameworkElement
 
             dc.PushOpacity(_backSideOpacity);
             dc.PushTransform(new MatrixTransform(backMatrix));
-            dc.DrawImage(_bitmap, new Rect(0, 0, _width, _height));
+            dc.DrawImage(_bitmap, _renderRect);
             dc.Pop();
             dc.Pop();
         }
@@ -898,6 +1179,17 @@ public class PlateViewer : FrameworkElement
         dc.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(60, 72, 96)), 1),
             new Rect(topLeft, bottomRight));
         
+        if (_selecting && _selectStartScreen is { } ms && _selectCurrentScreen is { } mc)
+        {
+            var marquee = new Rect(ms, mc);
+            var fill = new SolidColorBrush(Color.FromArgb(40, 90, 170, 255));
+            var stroke = new Pen(new SolidColorBrush(Color.FromRgb(130, 205, 255)), 1)
+            {
+                DashStyle = DashStyles.Dash
+            };
+            dc.DrawRectangle(fill, stroke, marquee);
+        }
+
         DrawDensitometerMarker(dc);
         DrawCaliper(dc);
     }
