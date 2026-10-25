@@ -69,8 +69,10 @@ public sealed class CaliperEventArgs : EventArgs
 public class PlateViewer : FrameworkElement
 {
     private const double MinZoom = 0.01;
-    // Zoom above 100 % is disabled: the proof is inspected at 1:1 native, never magnified.
-    private const double MaxZoom = 1.0;
+    // Zoom above 100 % native is disabled. View scale 1.0 means 100 % of the *base* level,
+    // so the cap in view units is the plate's native factor (8 for a 2400 dpi plate on a
+    // 300 dpi base).
+    private double MaxZoom => Math.Max(1.0, _nativeFactor);
     
     private IReadOnlyList<PlateLayer> _plates = Array.Empty<PlateLayer>();
     private int _width;
@@ -931,6 +933,9 @@ public class PlateViewer : FrameworkElement
         SnapToDevicePixels();
         NotifyViewChanged();
     }
+
+    /// <summary>Plate width in image pixels — the reference for "100 %" in compare overlays.</summary>
+    public int PlateWidthPixels => _width;
 
     /// <summary>Centre the viewport on the plate centre (used when a compare pane opens).</summary>
     public void CentreOnPlate()

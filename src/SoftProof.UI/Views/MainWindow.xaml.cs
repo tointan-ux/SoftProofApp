@@ -105,6 +105,9 @@ public partial class MainWindow : Window
         Viewer.BackSideOpacity = _viewModel.BackSideOpacity;
         _viewModel.ViewCommandRequested += OnViewCommand;
         _viewModel.CompareModeChanged += (_, _) => RefreshCompare();
+        // The overlay modes have their own zoom; keep the readout showing the real scale.
+        CompareOverlay.ZoomChanged += (_, nativeZoom) => _viewModel.UpdateOverlayZoom(nativeZoom);
+
         CompareOverlay.DifferenceThreshold = _viewModel.DifferenceThreshold;
         CompareOverlay.DifferenceMeasured += (_, percent) =>
         {
@@ -374,7 +377,9 @@ public partial class MainWindow : Window
         if (_viewModel.ComparePresentation == PlateComparePresentation.RipVsReference)
             CompareOverlay.SetReference(_lastComparison);
 
-        // SetPlates resets the overlay's zoom, so the pane zoom is applied last.
+        // SetPlates resets the overlay's zoom, so the pane zoom is applied last, using the
+        // same plate width the main canvas uses for 100 %.
+        CompareOverlay.SetPlateWidth(Viewer.PlateWidthPixels);
         CompareOverlay.SetNativeZoom(Viewer.NativeZoom);
     }
 

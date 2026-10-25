@@ -42,7 +42,8 @@ public static class ViewportResampler
         int width,
         int height,
         byte[] dest,
-        double opacity = 1.0)
+        double opacity = 1.0,
+        Int32Rect? clip = null)
     {
         if (width <= 0 || height <= 0 || sourceRect.Width <= 0 || sourceRect.Height <= 0)
             return;
@@ -54,13 +55,14 @@ public static class ViewportResampler
         var src = new byte[stride * sh];
         bmp.CopyPixels(src, stride, 0);
 
-        DrawRaw(src, sw, sh, sourceRect, view, dpiScaleX, dpiScaleY, width, height, dest, opacity);
+        DrawRaw(src, sw, sh, sourceRect, view, dpiScaleX, dpiScaleY, width, height, dest, opacity, clip);
     }
 
     /// <summary>WPF-free core used by the renderer and by the golden-image tests.</summary>
     public static void DrawRaw(
         byte[] src, int sw, int sh, Rect sourceRect, Matrix view,
-        double dpiScaleX, double dpiScaleY, int width, int height, byte[] dest, double opacity = 1.0)
+        double dpiScaleX, double dpiScaleY, int width, int height, byte[] dest, double opacity = 1.0,
+        Int32Rect? clip = null)
     {
         var stride = sw * 4;
         var inv = view;
@@ -79,6 +81,9 @@ public static class ViewportResampler
 
             for (var px = 0; px < width; px++)
             {
+                if (clip is { } c && (px < c.X || px >= c.X + c.Width || py < c.Y || py >= c.Y + c.Height))
+                    continue;
+
                 var dip = new Point((px + 0.5) / dpiScaleX, dipY);
                 var img = inv.Transform(dip);
 

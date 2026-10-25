@@ -44,7 +44,17 @@ public sealed class PlateCompareView : FrameworkElement
     private Rect _imageRect = Rect.Empty;
     private double _slide = 0.5;
     private double _zoom = 1.0;
+
+    /// <summary>Raised with the native zoom (1.0 = 100 %) whenever the overlay zooms.</summary>
+    public event EventHandler<double>? ZoomChanged;
+
+    private WriteableBitmap? _deviceBitmap;
+    private byte[]? _devicePixels;
+    private int _deviceWidth;
+    private int _deviceHeight;
     private double _pendingNativeZoom = double.NaN;
+    private double _lastReportedNativeZoom = double.NaN;
+    private int _plateWidth;      // plate pixels, so 100 % means one plate pixel per DIP
     private double _panX;
     private double _panY;
     private bool _panning;
@@ -127,6 +137,16 @@ public sealed class PlateCompareView : FrameworkElement
         InvalidateVisual();
     }
 
+    /// <summary>Reference width used for 100 % so the overlay matches the main canvas exactly.</summary>
+    public void SetPlateWidth(int platePixels)
+    {
+        if (platePixels > 0 && platePixels != _plateWidth)
+        {
+            _plateWidth = platePixels;
+            InvalidateVisual();
+        }
+    }
+
     public void SetPlates(PlateLayer? left, PlateLayer? right)
     {
         _leftCoverage = left is null ? null : BuildCoverage(left, out _left);
@@ -140,6 +160,9 @@ public sealed class PlateCompareView : FrameworkElement
 
         _bw = _left?.PixelWidth ?? _right?.PixelWidth ?? 0;
         _bh = _left?.PixelHeight ?? _right?.PixelHeight ?? 0;
+
+        // Plate pixels drive the 100 % reference, so the overlay matches the main canvas.
+        _plateWidth = left?.Width ?? right?.Width ?? _bw;
         ResetView();
     }
 
@@ -304,10 +327,10 @@ public sealed class PlateCompareView : FrameworkElement
 
         if (!double.IsNaN(_pendingNativeZoom))
         {
-            var pending = BaseScale();
-            if (pending > 0)
+            var fit = FitScale();
+            if (fit > 0 && _bw > 0 && _plateWidth > 0)
             {
-                _zoom = Math.Clamp(_pendingNativeZoom / pending, MinZoom, MaxZoom);
+                _zoom = Math.Clamp(_pendingNativeZoom * _plateWidth / (_bw * fit), MinZoom, MaxZoom);
                 _pendingNativeZoom = double.NaN;
             }
         }
@@ -316,6 +339,13 @@ public sealed class PlateCompareView : FrameworkElement
         var w = _bw * scale;
         var h = _bh * scale;
         _imageRect = new Rect((ActualWidth - w) / 2 + _panX, (ActualHeight - h) / 2 + _panY, w, h);
+
+        var reported = NativeZoom;
+        if (Math.Abs(reported - _lastReportedNativeZoom) > 0.0005)
+        {
+            _lastReportedNativeZoom = reported;
+            ZoomChanged?.Invoke(this, reported);
+        }
 
         switch (Mode)
         {
@@ -337,19 +367,50 @@ public sealed class PlateCompareView : FrameworkElement
         }
     }
 
+    /// <summary>
+    /// Draw one overlay layer into a device-pixel buffer and blit it 1:1, so the
+    /// single-canvas modes stay crisp instead of being resampled by WPF.
+    /// </summary>
+    private void DrawDevice(DrawingContext dc, ImageSource? image, Int32Rect? clip)
+    {
+        if (image is not BitmapSource bmp || bmp.PixelWidth <= 0 || bmp.PixelHeight <= 0 || _imageRect.Width <= 0)
+            return;
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var pw = Math.Max(1, (int)Math.Round(ActualWidth * dpi.DpiScaleX));
+        var ph = Math.Max(1, (int)Math.Round(ActualHeight * dpi.DpiScaleY));
+
+        if (_deviceBitmap is null || _deviceWidth != pw || _deviceHeight != ph)
+        {
+            _deviceBitmap = new WriteableBitmap(pw, ph, 96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Bgra32, null);
+            _devicePixels = new byte[pw * ph * 4];
+            _deviceWidth = pw;
+            _deviceHeight = ph;
+            Array.Clear(_devicePixels, 0, _devicePixels.Length);
+        }
+
+        var m = new Matrix(_imageRect.Width / bmp.PixelWidth, 0, 0,
+                           _imageRect.Height / bmp.PixelHeight, _imageRect.X, _imageRect.Y);
+
+        ViewportResampler.Draw(bmp, new Rect(0, 0, bmp.PixelWidth, bmp.PixelHeight), m,
+            dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!, 1.0, clip);
+
+        _deviceBitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _devicePixels!, pw * 4, 0);
+        RenderOptions.SetBitmapScalingMode(_deviceBitmap, BitmapScalingMode.NearestNeighbor);
+        dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
+    }
+
     private void DrawSlide(DrawingContext dc)
     {
-        if (_left is not null)
-            dc.DrawImage(_left, _imageRect);
+        DrawDevice(dc, _left, null);
 
         var splitX = _imageRect.Left + _imageRect.Width * _slide;
 
         if (_right is not null)
         {
-            dc.PushClip(new RectangleGeometry(new Rect(_imageRect.Left, _imageRect.Top,
-                                                       Math.Max(0, splitX - _imageRect.Left), _imageRect.Height)));
-            dc.DrawImage(_right, _imageRect);
-            dc.Pop();
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var clipWidth = (int)Math.Max(0, Math.Round(splitX * dpi.DpiScaleX));
+            DrawDevice(dc, _right, new Int32Rect(0, 0, clipWidth, _deviceHeight));
         }
 
         var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 190, 60)), 1.5);
@@ -366,9 +427,7 @@ public sealed class PlateCompareView : FrameworkElement
 
     private void DrawBlink(DrawingContext dc)
     {
-        var bitmap = _showRight ? _right : _left;
-        if (bitmap is not null)
-            dc.DrawImage(bitmap, _imageRect);
+        DrawDevice(dc, _showRight ? _right : _left, null);
 
         DrawBadge(dc, _showRight ? "B" : "A", _imageRect.Left + 10, _imageRect.Top + 10);
     }
@@ -390,7 +449,7 @@ public sealed class PlateCompareView : FrameworkElement
         DifferencePercent = _differencePercent;
         DifferenceMeasured?.Invoke(this, _differencePercent);
 
-        dc.DrawImage(_difference, _imageRect);
+        DrawDevice(dc, _difference, null);
         DrawBadge(dc, $"{_differencePercent:0.00}% differs", _imageRect.Left + 10, _imageRect.Top + 10);
     }
 
@@ -402,7 +461,7 @@ public sealed class PlateCompareView : FrameworkElement
             return;
         }
 
-        dc.DrawImage(_reference, _imageRect);
+        DrawDevice(dc, _reference, null);
 
         var text = _comparison.IsClean
             ? "No RIP errors"
@@ -490,33 +549,27 @@ public sealed class PlateCompareView : FrameworkElement
         Cursor = Mode == PlateCompareMode.Slide ? Cursors.SizeWE : Cursors.Arrow;
     }
 
-    /// <summary>Zoom expressed as native plate pixels per device pixel (1.0 = 100 %).</summary>
-    public double NativeZoom
-    {
-        get
-        {
-            var baseScale = BaseScale();
-            return baseScale <= 0 ? 1.0 : _zoom * baseScale;
-        }
-    }
+    /// <summary>Zoom in plate terms: 1.0 shows one plate pixel per DIP, exactly like the main canvas.</summary>
+    public double NativeZoom =>
+        _plateWidth > 0 && _imageRect.Width > 0 ? _imageRect.Width / _plateWidth : _zoom;
 
-    private double BaseScale() =>
+    private double FitScale() =>
         _bw <= 0 || _bh <= 0 ? 0 : Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92;
 
-    /// <summary>Zoom to a native scale (1.0 = 100 %) so the toolbar drives overlay modes too.</summary>
+    /// <summary>Zoom so the overlay matches the main canvas at <paramref name="nativeZoom"/>.</summary>
     public void SetNativeZoom(double nativeZoom)
     {
-        _pendingNativeZoom = nativeZoom;   // applied in OnRender once the bitmaps are sized
-        _panX = 0;
-        _panY = 0;
-
-        var baseScale = BaseScale();
-        if (baseScale > 0)
+        var fit = FitScale();
+        if (fit <= 0 || _bw <= 0 || _plateWidth <= 0)
         {
-            _zoom = Math.Clamp(nativeZoom / baseScale, MinZoom, MaxZoom);
-            _pendingNativeZoom = double.NaN;
+            _pendingNativeZoom = nativeZoom;
+            return;
         }
 
+        _zoom = Math.Clamp(nativeZoom * _plateWidth / (_bw * fit), MinZoom, MaxZoom);
+        _pendingNativeZoom = double.NaN;
+        _panX = 0;
+        _panY = 0;
         InvalidateVisual();
     }
 
@@ -540,6 +593,7 @@ public sealed class PlateCompareView : FrameworkElement
         _panX = pos.X - ActualWidth / 2 - cx * _zoom;
         _panY = pos.Y - ActualHeight / 2 - cy * _zoom;
 
+        ZoomChanged?.Invoke(this, NativeZoom);
         InvalidateVisual();
         e.Handled = true;
     }

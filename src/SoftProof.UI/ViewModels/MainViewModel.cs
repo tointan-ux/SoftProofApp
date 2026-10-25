@@ -226,6 +226,18 @@ public partial class MainViewModel : ObservableObject
             : scale;
     }
 
+    /// <summary>Overlay compare modes report their own zoom; keep the readout truthful.</summary>
+    public void UpdateOverlayZoom(double nativeZoom)
+    {
+        ZoomLevel = nativeZoom;
+
+        var plateDpi = CurrentJob?.Metadata.Resolution ?? 0;
+        var percent = nativeZoom * 100;
+        ViewScaleText = plateDpi > 0
+            ? $"{plateDpi:0} dpi plate · view {plateDpi:0} dpi · {percent:0}%"
+            : $"{percent:0}%";
+    }
+
     [ObservableProperty]
     private bool _isDotsView;
 
