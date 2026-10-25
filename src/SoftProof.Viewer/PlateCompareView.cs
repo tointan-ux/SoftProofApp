@@ -55,6 +55,11 @@ public sealed class PlateCompareView : FrameworkElement
     private double _pendingNativeZoom = double.NaN;
     private double _lastReportedNativeZoom = double.NaN;
     private PlateLayer? _leftLayer;
+    private long _platesVersion;
+    private long _cacheKey = long.MinValue;
+    private double _requestedNativeZoom = 1.0;
+    private WriteableBitmap? _blinkA, _blinkB;
+    private long _blinkKeyA = long.MinValue, _blinkKeyB = long.MinValue;
     private PlateLayer? _rightLayer;
     private int _plateWidth;      // plate pixels, so 100 % means one plate pixel per DIP
     private double _panX;
@@ -119,6 +124,10 @@ public sealed class PlateCompareView : FrameworkElement
             _blinkTimer.Stop();
 
         Cursor = mode == PlateCompareMode.Slide ? Cursors.SizeWE : Cursors.Arrow;
+
+        // Keep the current scale across mode switches (a mode change must not jump to fit).
+        ResetView();
+        SetNativeZoom(_requestedNativeZoom);
         InvalidateVisual();
     }
 
@@ -167,6 +176,10 @@ public sealed class PlateCompareView : FrameworkElement
 
         // Plate pixels drive the 100 % reference, so the overlay matches the main canvas.
         _plateWidth = left?.Width ?? right?.Width ?? _bw;
+        _platesVersion++;
+        _cacheKey = long.MinValue;
+        _blinkA = _blinkB = null;
+        _blinkKeyA = _blinkKeyB = long.MinValue;
         ResetView();
     }
 
@@ -320,6 +333,9 @@ public sealed class PlateCompareView : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
+
+        if (Mode == PlateCompareMode.Blink && IsVisible && !_blinkTimer.IsEnabled)
+            _blinkTimer.Start();
         dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(15, 22, 38)), null,
                          new Rect(0, 0, ActualWidth, ActualHeight));
 
@@ -574,19 +590,60 @@ public sealed class PlateCompareView : FrameworkElement
         BlitDevice(dc);
     }
 
+    /// <summary>
+    /// Signature of everything that changes the rendered overlay pixels (zoom, pan, size,
+    /// mode, split, threshold, plates). Chrome like badges is not part of it.
+    /// </summary>
+    private long ComputeFrameKey(int modeTag, bool includeFlip = true)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var hash = new HashCode();
+        hash.Add(modeTag);
+        hash.Add(_platesVersion);
+        hash.Add(ActualWidth);
+        hash.Add(ActualHeight);
+        hash.Add(dpi.DpiScaleX);
+        hash.Add(dpi.DpiScaleY);
+        hash.Add(_imageRect.X);
+        hash.Add(_imageRect.Y);
+        hash.Add(_imageRect.Width);
+        hash.Add(_imageRect.Height);
+        hash.Add(_slide);
+        if (includeFlip)
+            hash.Add(_showRight);
+        hash.Add(DifferenceThreshold);
+        return hash.ToHashCode();
+    }
+
+    /// <summary>Shows the cached frame when nothing pixel-relevant changed.</summary>
+    private bool TryBlitCached(long key, DrawingContext dc)
+    {
+        if (_deviceBitmap is null || key != _cacheKey)
+            return false;
+
+        dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
+        return true;
+    }
+
     private void DrawSlide(DrawingContext dc)
     {
-        DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null, clear: true, blit: false);
-
         var splitX = _imageRect.Left + _imageRect.Width * _slide;
+        var key = ComputeFrameKey(1) ^ splitX.GetHashCode();
 
-        if (_right is not null)
+        if (!TryBlitCached(key, dc))
         {
-            var dpi = VisualTreeHelper.GetDpi(this);
-            var clipWidth = (int)Math.Max(0, Math.Round(splitX * dpi.DpiScaleX));
-            DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH,
-                new Int32Rect(0, 0, clipWidth, _deviceHeight), clear: false, blit: false);
+            DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null, clear: true, blit: false);
+
+            if (_right is not null)
+            {
+                var dpi = VisualTreeHelper.GetDpi(this);
+                var clipWidth = (int)Math.Max(0, Math.Round(splitX * dpi.DpiScaleX));
+                DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH,
+                    new Int32Rect(0, 0, clipWidth, _deviceHeight), clear: false, blit: false);
+            }
+
             BlitDevice(dc);
+            _cacheKey = key;
         }
 
         var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 190, 60)), 1.5);
@@ -603,10 +660,31 @@ public sealed class PlateCompareView : FrameworkElement
 
     private void DrawBlink(DrawingContext dc)
     {
-        if (_showRight)
-            DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH, null);
+        // Both frames are cached: the blink timer then only blits, never re-samples coverage.
+        var key = ComputeFrameKey(2, includeFlip: false);
+        var cachedFrame = _showRight ? _blinkB : _blinkA;
+        var cachedKey = _showRight ? _blinkKeyB : _blinkKeyA;
+
+        if (cachedFrame is not null && cachedKey == key)
+        {
+            dc.DrawImage(cachedFrame, new Rect(0, 0, ActualWidth, ActualHeight));
+        }
         else
-            DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null);
+        {
+            if (_showRight)
+                DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH, null);
+            else
+                DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null);
+
+            if (_deviceBitmap is not null)
+            {
+                var frozen = new WriteableBitmap(_deviceBitmap);
+                frozen.Freeze();
+
+                if (_showRight) { _blinkB = frozen; _blinkKeyB = key; }
+                else { _blinkA = frozen; _blinkKeyA = key; }
+            }
+        }
 
         DrawBadge(dc, _showRight ? "B" : "A", _imageRect.Left + 10, _imageRect.Top + 10);
     }
@@ -628,7 +706,12 @@ public sealed class PlateCompareView : FrameworkElement
         DifferencePercent = _differencePercent;
         DifferenceMeasured?.Invoke(this, _differencePercent);
 
-        DrawDifferenceDevice(dc);
+        var diffKey = ComputeFrameKey(3);
+        if (!TryBlitCached(diffKey, dc))
+        {
+            DrawDifferenceDevice(dc);
+            _cacheKey = diffKey;
+        }
         DrawBadge(dc, $"{_differencePercent:0.00}% differs", _imageRect.Left + 10, _imageRect.Top + 10);
     }
 
@@ -738,6 +821,7 @@ public sealed class PlateCompareView : FrameworkElement
     /// <summary>Zoom so the overlay matches the main canvas at <paramref name="nativeZoom"/>.</summary>
     public void SetNativeZoom(double nativeZoom)
     {
+        _requestedNativeZoom = nativeZoom;
         var fit = FitScale();
         if (fit <= 0 || _bw <= 0 || _plateWidth <= 0)
         {
