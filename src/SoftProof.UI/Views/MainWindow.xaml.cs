@@ -56,6 +56,10 @@ public partial class MainWindow : Window
         {
             Viewer.ZoomNativeTo(zoom);
 
+            // Blink / Slide / Difference render into a single overlay control with its own zoom.
+            if (_viewModel.IsCompareMode && _viewModel.ComparePresentation != PlateComparePresentation.SideBySide)
+                CompareOverlay.SetNativeZoom(zoom);
+
             // Side-by-side: the toolbar zoom must move both panes, keeping their centres aligned.
             if (_viewModel.IsCompareMode)
             {
@@ -302,6 +306,9 @@ public partial class MainWindow : Window
 
         CompareOverlay.Visibility = on && !sideBySide ? Visibility.Visible : Visibility.Collapsed;
 
+        if (on && !sideBySide)
+            CompareOverlay.SetNativeZoom(Viewer.NativeZoom);   // overlay opens at the pane's zoom
+
         if (sideBySide)
         {
             // The right pane is a full viewer: same tool (select-to-zoom, measure, densitometer),
@@ -366,6 +373,9 @@ public partial class MainWindow : Window
 
         if (_viewModel.ComparePresentation == PlateComparePresentation.RipVsReference)
             CompareOverlay.SetReference(_lastComparison);
+
+        // SetPlates resets the overlay's zoom, so the pane zoom is applied last.
+        CompareOverlay.SetNativeZoom(Viewer.NativeZoom);
     }
 
     /// <summary>Load a rasterised reference (PDF via Ghostscript, or an image) and diff the plate.</summary>

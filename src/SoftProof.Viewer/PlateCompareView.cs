@@ -44,6 +44,7 @@ public sealed class PlateCompareView : FrameworkElement
     private Rect _imageRect = Rect.Empty;
     private double _slide = 0.5;
     private double _zoom = 1.0;
+    private double _pendingNativeZoom = double.NaN;
     private double _panX;
     private double _panY;
     private bool _panning;
@@ -301,6 +302,16 @@ public sealed class PlateCompareView : FrameworkElement
             return;
         }
 
+        if (!double.IsNaN(_pendingNativeZoom))
+        {
+            var pending = BaseScale();
+            if (pending > 0)
+            {
+                _zoom = Math.Clamp(_pendingNativeZoom / pending, MinZoom, MaxZoom);
+                _pendingNativeZoom = double.NaN;
+            }
+        }
+
         var scale = Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92 * _zoom;
         var w = _bw * scale;
         var h = _bh * scale;
@@ -477,6 +488,36 @@ public sealed class PlateCompareView : FrameworkElement
         _panning = false;
         ReleaseMouseCapture();
         Cursor = Mode == PlateCompareMode.Slide ? Cursors.SizeWE : Cursors.Arrow;
+    }
+
+    /// <summary>Zoom expressed as native plate pixels per device pixel (1.0 = 100 %).</summary>
+    public double NativeZoom
+    {
+        get
+        {
+            var baseScale = BaseScale();
+            return baseScale <= 0 ? 1.0 : _zoom * baseScale;
+        }
+    }
+
+    private double BaseScale() =>
+        _bw <= 0 || _bh <= 0 ? 0 : Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92;
+
+    /// <summary>Zoom to a native scale (1.0 = 100 %) so the toolbar drives overlay modes too.</summary>
+    public void SetNativeZoom(double nativeZoom)
+    {
+        _pendingNativeZoom = nativeZoom;   // applied in OnRender once the bitmaps are sized
+        _panX = 0;
+        _panY = 0;
+
+        var baseScale = BaseScale();
+        if (baseScale > 0)
+        {
+            _zoom = Math.Clamp(nativeZoom / baseScale, MinZoom, MaxZoom);
+            _pendingNativeZoom = double.NaN;
+        }
+
+        InvalidateVisual();
     }
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
