@@ -541,6 +541,41 @@ public class PlateViewer : FrameworkElement
         NotifyViewChanged();
     }
     
+    /// <summary>Integer zoom stops above 100 % — every plate pixel becomes an exact N×N block.</summary>
+    private static readonly double[] ZoomStops = { 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0 };
+
+    /// <summary>Next stop in <paramref name="direction"/> (+1 in, -1 out) from the current zoom.</summary>
+    private static double ZoomStop(double current, int direction)
+    {
+        if (current < 1.0)
+            return direction > 0 ? 1.0 : Math.Max(MinZoomConstant, current / 1.15);
+
+        if (direction > 0)
+        {
+            foreach (var stop in ZoomStops)
+                if (stop > current + 1e-6)
+                    return stop;
+            return ZoomStops[^1];
+        }
+
+        for (var i = ZoomStops.Length - 1; i >= 0; i--)
+            if (ZoomStops[i] < current - 1e-6)
+                return ZoomStops[i];
+        return 1.0;
+    }
+
+    private const double MinZoomConstant = 0.01;
+
+    /// <summary>Round the pan offset to whole device pixels so tiles never land on half pixels.</summary>
+    private void SnapToDevicePixels()
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var sx = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
+        var sy = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
+        _view.OffsetX = Math.Round(_view.OffsetX * sx) / sx;
+        _view.OffsetY = Math.Round(_view.OffsetY * sy) / sy;
+    }
+
     /// <summary>Set the zoom (1.0 = 100%), keeping <paramref name="anchor"/> (screen coords) fixed.</summary>
     public void SetZoom(double zoom, Point? anchor = null)
     {
@@ -549,6 +584,7 @@ public class PlateViewer : FrameworkElement
         var target = Math.Clamp(zoom, MinZoom, MaxZoom);
         var factor = target / _view.M11;
         _view.ScaleAt(factor, factor, a.X, a.Y);
+        SnapToDevicePixels();
         NotifyViewChanged();
     }
 
@@ -884,6 +920,7 @@ public class PlateViewer : FrameworkElement
         _view = new Matrix(scale, 0, 0, scale,
             ActualWidth / 2 - oriented.X * scale,
             ActualHeight / 2 - oriented.Y * scale);
+        SnapToDevicePixels();
         NotifyViewChanged();
     }
 
@@ -930,7 +967,10 @@ public class PlateViewer : FrameworkElement
         }
 
         if (dx != 0 || dy != 0)
+        {
             _view.Translate(dx, dy);
+            SnapToDevicePixels();
+        }
     }
 
     private void NotifyViewChanged()
@@ -974,8 +1014,9 @@ public class PlateViewer : FrameworkElement
         base.OnMouseWheel(e);
         if (_width == 0) return;
         
-        var factor = e.Delta > 0 ? 1.15 : 1 / 1.15;
-        SetZoom(Zoom * factor, e.GetPosition(this));
+        var direction = e.Delta > 0 ? 1 : -1;
+        var target = Zoom >= 1.0 ? ZoomStop(Zoom, direction) : Zoom * (direction > 0 ? 1.15 : 1 / 1.15);
+        SetZoom(target, e.GetPosition(this));
         e.Handled = true;
     }
     
@@ -1028,6 +1069,7 @@ public class PlateViewer : FrameworkElement
         if (_panning)
         {
             _view.Translate(pos.X - _panLast.X, pos.Y - _panLast.Y);
+            SnapToDevicePixels();
             _panLast = pos;
             NotifyViewChanged();
         }
