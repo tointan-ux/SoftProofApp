@@ -46,10 +46,8 @@ public static class PreflightAnalyzer
             CheckPlatePolarity(plates, settings),
             CheckMissingSeparation(plates, settings),
             CheckTrapGaps(job, plates, settings),
-            new("Barcode Quiet Zone & BWR",
-                "Not run: barcode analysis is not implemented yet.", PreflightStatus.NotRun),
-            new("Dieline Knockout / Overprint",
-                "Not run: dieline analysis is not implemented yet.", PreflightStatus.NotRun)
+            CheckBarcodeQuietZoneAndBwr(job, plates, settings),
+            CheckDielineKnockoutOverprint(job, plates, settings),
         };
     }
     
@@ -491,6 +489,101 @@ public static class PreflightAnalyzer
             $"a trapping or gap-line risk.{location}" + PressSuffix(settings),
             PreflightStatus.Warning)
         { Focus = focus };
+    }
+
+    // ---- Barcode quiet zone & BWR --------------------------------------------------------
+    private static PreflightResult CheckBarcodeQuietZoneAndBwr(PrintJob job, IReadOnlyList<PlateLayer> plates, PreflightSettings settings)
+    {
+        const string title = "Barcode Quiet Zone & BWR";
+
+        if (!settings.EnableBarcodeCheck)
+            return new(title, "Barcode check disabled in preflight settings.", PreflightStatus.NotRun);
+
+        var process = plates.Where(p => IsProcess(p.Separation.Color)).ToList();
+        if (process.Count == 0)
+            return new(title, "No process plates with raster data loaded.", PreflightStatus.NotRun);
+
+        var allResults = new List<BarcodeAnalyzer.BarcodeResult>();
+        foreach (var plate in process)
+        {
+            var results = BarcodeAnalyzer.Analyze(plate, job, settings);
+            allResults.AddRange(results);
+        }
+
+        if (allResults.Count == 0)
+            return new(title, "No barcodes detected on process plates.", PreflightStatus.NotRun);
+
+        var failed = allResults.Where(r => !r.QuietZoneLeftPass || !r.QuietZoneRightPass || !r.BwrPass).ToList();
+        var passed = allResults.Where(r => r.QuietZoneLeftPass && r.QuietZoneRightPass && r.BwrPass).ToList();
+
+        var detailParts = new List<string>();
+        if (failed.Count > 0)
+        {
+            detailParts.Add($"FAIL: {failed.Count} barcode(s) with issues:");
+            foreach (var r in failed)
+            {
+                var issues = new List<string>();
+                if (!r.QuietZoneLeftPass) issues.Add($"left QZ {r.QuietZoneLeftMm:0.00}mm < {settings.BarcodeQuietZoneMm}mm");
+                if (!r.QuietZoneRightPass) issues.Add($"right QZ {r.QuietZoneRightMm:0.00}mm < {settings.BarcodeQuietZoneMm}mm");
+                if (!r.BwrPass) issues.Add($"BWR {r.BwrMm:0.000}mm > {settings.BarcodeBWRToleranceMm}mm");
+                detailParts.Add($"  {r.PlateName} ({r.Symbology}): {string.Join(", ", issues)}");
+            }
+        }
+
+        if (passed.Count > 0)
+        {
+            detailParts.Add($"PASS: {passed.Count} barcode(s) meet quiet zone and BWR requirements.");
+        }
+
+        var detail = string.Join(" ", detailParts);
+        var status = failed.Count > 0 ? PreflightStatus.Fail : PreflightStatus.Pass;
+
+        var focus = failed.Count > 0 ? failed.First().Focus : passed.FirstOrDefault()?.Focus;
+
+        return new(title, detail, status) { Focus = focus };
+    }
+
+
+// ---- Dieline knockout/overprint --------------------------------------------------------
+    private static PreflightResult CheckDielineKnockoutOverprint(PrintJob job, IReadOnlyList<PlateLayer> plates, PreflightSettings settings)
+    {
+        const string title = "Dieline Knockout / Overprint";
+
+        if (!settings.EnableDielineCheck)
+            return new(title, "Dieline check disabled in preflight settings.", PreflightStatus.NotRun);
+
+        var allResults = DielineAnalyzer.Analyze(job, plates, settings);
+
+        if (allResults.Count == 0)
+            return new(title, "No dieline plates detected.", PreflightStatus.NotRun);
+
+        var failed = allResults.Where(r => !r.KnockoutPass || !r.OverprintPass).ToList();
+        var passed = allResults.Where(r => r.KnockoutPass && r.OverprintPass).ToList();
+
+        var detailParts = new List<string>();
+        if (failed.Count > 0)
+        {
+            detailParts.Add($"FAIL: {failed.Count} dieline(s) with issues:");
+            foreach (var r in failed)
+            {
+                var issues = new List<string>();
+                if (!r.KnockoutPass) issues.Add($"ink under dieline {r.InkUnderDielinePercent:0.00}% > {settings.DielineMaxInkUnderPercent:0.##}%");
+                if (!r.OverprintPass) issues.Add("overprint issue");
+                detailParts.Add($"  {r.DielinePlateName} ({r.DielineType}): {string.Join(", ", issues)}");
+            }
+        }
+
+        if (passed.Count > 0)
+        {
+            detailParts.Add($"PASS: {passed.Count} dieline(s) meet knockout/overprint requirements.");
+        }
+
+        var detail = string.Join(" ", detailParts);
+        var status = failed.Count > 0 ? PreflightStatus.Fail : PreflightStatus.Pass;
+
+        var focus = failed.Count > 0 ? failed.First().Focus : passed.FirstOrDefault()?.Focus;
+
+        return new(title, detail, status) { Focus = focus };
     }
 
 }

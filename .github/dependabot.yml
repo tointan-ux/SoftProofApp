@@ -1,0 +1,81 @@
+version: 2
+updates:
+  # NuGet dependencies
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "nuget"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      # Group Microsoft.Extensions.* packages
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group test packages
+      test-packages:
+        patterns:
+          - "xunit*"
+          - "Moq"
+          - "FluentAssertions"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group UI packages
+      ui-packages:
+        patterns:
+          - "MaterialDesignThemes"
+          - "CommunityToolkit.Mvvm"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group math/image packages
+      math-image-packages:
+        patterns:
+          - "MathNet.Numerics"
+          - "SixLabors.ImageSharp"
+          - "WriteableBitmapEx"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions workflow updates
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # Dockerfile updates (if any)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"

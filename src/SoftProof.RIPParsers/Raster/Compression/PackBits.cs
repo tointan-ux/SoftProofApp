@@ -22,7 +22,7 @@ public static class PackBits
 
         while (i < source.Length)
         {
-            var header = (sbyte)source[i++];
+            var header = unchecked((sbyte)source[i++]);
 
             if (header >= 0)
             {

@@ -1,4 +1,5 @@
 using SoftProof.Core.Models;
+using SoftProof.Core.ColorPipeline;
 
 namespace SoftProof.Core.Interfaces;
 
@@ -60,6 +61,14 @@ public interface IColorEngine
     /// </summary>
     Task<BitmapData> ApplyTransformAsync(
         ColorTransform transform,
+        BitmapData source,
+        CancellationToken cancellationToken = default);
+    
+    /// <summary>
+    /// Apply proofing transform with TVI curves and ink limit enforcement
+    /// </summary>
+    Task<BitmapData> ApplyProofTransformAsync(
+        ProofTransform proofTransform,
         BitmapData source,
         CancellationToken cancellationToken = default);
     
@@ -145,6 +154,8 @@ public class ProofTransform : IDisposable
     public ColorTransform? SimulationTransform { get; set; }
     public ColorTransform? DisplayTransform { get; set; }
     public ProofSettings Settings { get; set; } = new();
+    public TVIPipelineStage? TVIStage { get; set; }
+    public InkLimitStage? InkLimitStage { get; set; }
     public bool IsDisposed { get; private set; }
     
     public void Dispose()

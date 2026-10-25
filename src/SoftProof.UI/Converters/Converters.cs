@@ -240,3 +240,58 @@ public class SeparationColorToBrushConverter : IValueConverter
         throw new NotImplementedException();
     }
 }
+
+/// <summary>
+/// Converts bool to Visibility
+/// </summary>
+public class BoolToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is bool b)
+            return b ? Visibility.Visible : Visibility.Collapsed;
+        return Visibility.Collapsed;
+    }
+    
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is Visibility v)
+            return v == Visibility.Visible;
+        return false;
+    }
+}
+
+/// <summary>
+/// Converts SeparationColor to Color
+/// </summary>
+public class SeparationToColorConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is SeparationColor color)
+        {
+            return color switch
+            {
+                SeparationColor.ProcessCyan => Colors.Cyan,
+                SeparationColor.ProcessMagenta => Colors.Magenta,
+                SeparationColor.ProcessYellow => Colors.Yellow,
+                SeparationColor.ProcessBlack => Colors.Black,
+                SeparationColor.Orange => Colors.Orange,
+                SeparationColor.Green => Colors.Green,
+                SeparationColor.Violet => Colors.Violet,
+                SeparationColor.Red => Colors.Red,
+                SeparationColor.Blue => Colors.Blue,
+                SeparationColor.White => Colors.White,
+                SeparationColor.Varnish => Colors.LightGray,
+                SeparationColor.Primer => Colors.Gray,
+                _ => Colors.HotPink
+            };
+        }
+        return Colors.Transparent;
+    }
+    
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        throw new NotImplementedException();
+    }
+}

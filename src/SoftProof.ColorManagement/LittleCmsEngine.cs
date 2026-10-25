@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
+using SoftProof.Core.ColorPipeline;
 
 namespace SoftProof.ColorManagement;
 
@@ -177,7 +178,7 @@ internal static class LcmsNative
 }
 
 /// <summary>
-/// LittleCMS-based color engine implementation
+/// LittleCMS-based color engine implementation with TVI/ink limit support
 /// </summary>
 public class LittleCmsEngine : IColorEngine, IDisposable
 {
@@ -189,9 +190,6 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     {
         _logger = logger;
         _context = LcmsNative.cmsCreateContext(IntPtr.Zero, IntPtr.Zero);
-        
-        // Set error handler
-        // Note: In production, implement proper error handling callback
     }
     
     public async Task<IccProfile> LoadProfileAsync(string profilePath, CancellationToken cancellationToken = default)
@@ -216,7 +214,6 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             RawData = await File.ReadAllBytesAsync(profilePath, cancellationToken)
         };
         
-        // Get description
         profile.Description = GetProfileDescription(handle);
         
         _logger.LogInformation("Loaded ICC profile: {Name} ({ColorSpace}, Class: {Class})", 
@@ -267,12 +264,28 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         
-        // For proofing, we need:
-        // 1. Input (document) -> Simulation (print) transform
-        // 2. Simulation -> Display transform
-        // The proofing transform combines both
+        // Create TVI pipeline stage if TVI curves are provided
+        var tviStage = new TVIPipelineStage(settings.TVICurves ?? new Dictionary<SeparationColor, TVICurve>());
         
-        var inputFormat = GetFormatter(ColorSpace.CMYK, false); // Assume CMYK input
+        // Create ink limit stage
+        var inkLimitStage = new InkLimitStage(settings.InkLimit);
+        
+        // Create simulation transform (document -> print simulation)
+        var simTransform = await CreateTransformAsync(
+            new IccProfile { ColorSpace = ColorSpace.CMYK, Handle = IntPtr.Zero }, // Placeholder for input
+            simulationProfile,
+            settings.RenderingIntent,
+            settings.BlackPointCompensation);
+        
+        // Create display transform (simulation -> display)
+        var dispTransform = await CreateTransformAsync(
+            simulationProfile,
+            displayProfile,
+            RenderingIntent.RelativeColorimetric,
+            true);
+        
+        // Create proofing transform using LittleCMS built-in soft proofing
+        var inputFormat = GetFormatter(ColorSpace.CMYK, false);
         var proofingFormat = GetFormatter(simulationProfile.ColorSpace, false);
         var displayFormat = GetFormatter(displayProfile.ColorSpace, false);
         
@@ -280,56 +293,24 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         if (settings.BlackPointCompensation)
             flags |= LcmsNative.cmsFLAGS_BLACKPOINTCOMPENSATION;
         
-        // Create proofing transform
         var proofHandle = LcmsNative.cmsCreateProofingTransform(
-            IntPtr.Zero, inputFormat,  // Input profile will be set per-job
-            simulationProfile.Handle, proofingFormat,
-            displayProfile.Handle, displayFormat,
+            IntPtr.Zero, GetFormatter(ColorSpace.CMYK, false),  // Input will be set per-job
+            simulationProfile.Handle, GetFormatter(simulationProfile.ColorSpace, false),
+            displayProfile.Handle, GetFormatter(displayProfile.ColorSpace, false),
             (int)settings.RenderingIntent,
-            (int)RenderingIntent.RelativeColorimetric, // Proofing intent
+            (int)RenderingIntent.RelativeColorimetric,
             flags);
         
-        if (proofHandle == IntPtr.Zero)
+        var proofTransform = new ProofTransform
         {
-            // Fallback: create separate transforms
-            return await CreateProofTransformFallbackAsync(displayProfile, simulationProfile, settings, cancellationToken);
-        }
-        
-        return new ProofTransform
-        {
-            Settings = settings,
-            // Store handles for later use
-        };
-    }
-    
-    private async Task<ProofTransform> CreateProofTransformFallbackAsync(
-        IccProfile displayProfile,
-        IccProfile simulationProfile,
-        ProofSettings settings,
-        CancellationToken cancellationToken)
-    {
-        // Create simulation transform (document -> print simulation)
-        var simTransform = await CreateTransformAsync(
-            new IccProfile { ColorSpace = ColorSpace.CMYK, Handle = IntPtr.Zero }, // Placeholder
-            simulationProfile,
-            settings.RenderingIntent,
-            settings.BlackPointCompensation,
-            cancellationToken);
-        
-        // Create display transform (simulation -> display)
-        var dispTransform = await CreateTransformAsync(
-            simulationProfile,
-            displayProfile,
-            RenderingIntent.RelativeColorimetric,
-            true,
-            cancellationToken);
-        
-        return new ProofTransform
-        {
-            SimulationTransform = simTransform,
+            SimulationTransform = new ColorTransform { Handle = proofHandle },
             DisplayTransform = dispTransform,
-            Settings = settings
+            Settings = settings,
+            TVIStage = new TVIPipelineStage(settings.TVICurves ?? new Dictionary<SeparationColor, TVICurve>()),
+            InkLimitStage = new InkLimitStage(settings.InkLimit)
         };
+        
+        return proofTransform;
     }
     
     public async Task<BitmapData> ApplyTransformAsync(
@@ -349,7 +330,6 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         
         dest.Pixels = new byte[dest.Stride * dest.Height];
         
-        // Pin arrays for native access
         var sourceHandle = GCHandle.Alloc(source.Pixels, GCHandleType.Pinned);
         var destHandle = GCHandle.Alloc(dest.Pixels, GCHandleType.Pinned);
         
@@ -374,12 +354,51 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         return dest;
     }
     
+    /// <summary>
+    /// Applies proofing transform with TVI curves and ink limit enforcement
+    /// </summary>
+    public async Task<BitmapData> ApplyProofTransformAsync(
+        ProofTransform proofTransform,
+        BitmapData source,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        
+        // Step 1: Apply TVI curves to source data
+        var tviOutput = new byte[source.Pixels.Length];
+        proofTransform.TVIStage?.ApplyTVI(source.Pixels, tviOutput, source.Width * source.Height);
+        
+        // Step 2: Apply ink limit
+        var inkLimitedData = new byte[tviOutput.Length];
+        Buffer.BlockCopy(tviOutput, 0, inkLimitedData, 0, tviOutput.Length);
+        proofTransform.InkLimitStage?.EnforceLimit(inkLimitedData, source.Width * source.Height);
+        
+        // Step 3: Apply simulation transform (document -> print simulation)
+        var simInput = new BitmapData
+        {
+            Width = source.Width,
+            Height = source.Height,
+            Format = PixelFormat.CMYK64,
+            Stride = CalculateStride(source.Width, PixelFormat.CMYK64),
+            Pixels = inkLimitedData
+        };
+        
+        var simOutput = await ApplyTransformAsync(proofTransform.SimulationTransform ?? throw new InvalidOperationException("Simulation transform not available"), simInput, cancellationToken);
+        
+        // Step 4: Apply display transform (simulation -> display)
+        if (proofTransform.DisplayTransform != null)
+        {
+            return await ApplyTransformAsync(proofTransform.DisplayTransform, simOutput, cancellationToken);
+        }
+        
+        return simOutput;
+    }
+    
     public DeltaEResult CalculateDeltaE(float[] lab1, float[] lab2, DeltaEFormula formula = DeltaEFormula.CIE2000)
     {
         if (lab1.Length < 3 || lab2.Length < 3)
             throw new ArgumentException("Lab arrays must have at least 3 elements");
         
-        // Use LittleCMS for CIE2000
         if (formula == DeltaEFormula.CIE2000)
         {
             var lab1Ptr = Marshal.AllocHGlobal(3 * sizeof(double));
@@ -405,7 +424,6 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             }
         }
         
-        // Fallback: simple CIE76
         var dL = lab1[0] - lab2[0];
         var da = lab1[1] - lab2[1];
         var db = lab1[2] - lab2[2];
@@ -511,7 +529,6 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             _ => 4
         };
         
-        // Align to 4-byte boundary
         var stride = width * bytesPerPixel;
         return (stride + 3) & ~3;
     }

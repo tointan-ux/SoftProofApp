@@ -50,7 +50,7 @@ public sealed class PlatePyramid
     public int Height => Base.Height;
     public int Factor => Base.Factor;
 
-    /// <summary>Coarsest level whose width is still at least <paramref name="minimumWidth"/>.</summary>
+    /// <summary>Coarsest level whose width is still at least the given scale factor.</summary>
     public PyramidLevel LevelFor(double scale)
     {
         // Keep the 300 dpi base level for 5%-100%; only tiny thumbnails step down.

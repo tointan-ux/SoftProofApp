@@ -584,14 +584,14 @@ public sealed class TiffStripSource : IPlateSource
 
             if (_invert)
                 for (var i = 0; i < row.Length; i++)
-                    row[i] = (byte)~row[i];
+                    row[i] ^= 0xFF;
 
             if (_reverseBits)
                 for (var i = 0; i < row.Length; i++)
                     row[i] = ReverseBits(row[i]);
 
             if (usedBits != 0)
-                row[^1] &= (byte)(0xFF << (8 - usedBits));
+                row[^1] &= (byte)((0xFF << (8 - usedBits)) & 0xFF);
         }
     }
 

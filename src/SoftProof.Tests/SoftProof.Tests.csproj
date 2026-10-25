@@ -1,8 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <IsTestProject>true</IsTestProject>
     <IsPackable>false</IsPackable>
     <AssemblyName>SoftProof.Tests</AssemblyName>
     <RootNamespace>SoftProof.Tests</RootNamespace>
@@ -14,10 +12,13 @@
     <ProjectReference Include="..\SoftProof.RIPParsers\SoftProof.RIPParsers.csproj" />
     <ProjectReference Include="..\SoftProof.Viewer\SoftProof.Viewer.csproj" />
     <ProjectReference Include="..\SoftProof.Tools\SoftProof.Tools.csproj" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
-    <PackageReference Include="xunit" Version="2.6.0" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.0" />
-    <PackageReference Include="Moq" Version="4.20.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.8.1" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Moq" Version="4.20.70" />
     <PackageReference Include="FluentAssertions" Version="6.12.0" />
   </ItemGroup>
 
@@ -29,5 +30,4 @@
     <!-- Reference decoder: managed port of libtiff, used only to cross-check our strip decode. -->
     <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.649" />
   </ItemGroup>
-
 </Project>

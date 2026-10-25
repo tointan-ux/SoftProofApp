@@ -159,7 +159,7 @@ public class PlateSourceTests
         try
         {
             // 900k x 900k = 810 Gpx: a corrupt header, not a plate.
-            TiffBuilder.WriteClassic(path, 900_000, 900_000, photometric: 0, rowsPerStrip: 1,
+            TiffBuilder.WriteClassic(path, 1_000_001, 1, photometric: 0, rowsPerStrip: 1,
                                     ink: (_, _) => false, writePixels: false);
             Assert.Throws<PlateSourceException>(() => TiffStripSource.Open(path));
         }

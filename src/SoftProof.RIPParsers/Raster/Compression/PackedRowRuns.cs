@@ -5,7 +5,7 @@ namespace SoftProof.RIPParsers.Raster.Compression;
 /// <summary>
 /// Derives colour-change positions from a packed 1 bpp row using 64-bit word tricks instead of
 /// a per-pixel loop. A run boundary is a bit that differs from its left neighbour, so
-/// <c>word ^ (word &lt;&lt; 1)</c> marks them all at once and
+/// <c>word ^ (word << 1)</c> marks them all at once and
 /// <see cref="BitOperations.LeadingZeroCount"/> enumerates them MSB-first.
 /// </summary>
 public static class PackedRowRuns
@@ -34,7 +34,7 @@ public static class PackedRowRuns
                 var index = byteStart + k;
                 var value = index < row.Length ? row[index] : (byte)0;
                 if (invert)
-                    value = (byte)~value;
+                    value ^= 0xFF; // Avoid overflow in checked context: ~byte promotes to int
                 word = (word << 8) | value;
             }
 
@@ -46,7 +46,13 @@ public static class PackedRowRuns
             var wordStart = byteStart * 8;
             while (changes != 0)
             {
-                var bit = 63 - BitOperations.LeadingZeroCount(changes);
+                var lzc = BitOperations.LeadingZeroCount(changes);
+                var bit = 63 - lzc;
+                // Debug: check for invalid bit position
+                if (bit < 0 || bit >= 64)
+                {
+                    throw new InvalidOperationException($"Invalid bit position: bit={bit}, lzc={lzc}, changes=0x{changes:X16}, wordStart={wordStart}, width={width}, rowBytes={rowBytes}, byteStart={byteStart}");
+                }
                 changes &= ~(1UL << bit);
 
                 // Bit 63 is the first pixel of the word, so the pixel index counts down from 63.

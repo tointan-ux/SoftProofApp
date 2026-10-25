@@ -100,7 +100,7 @@ public class Separation
     /// <summary>Page index inside a multi-page TIFF (one page per plate); 0 otherwise.</summary>
     public int PageIndex { get; set; }
 
-    /// <summary>Screen angle in degrees as reported by the RIP (meaningful only if <see cref="ScreenLpi"/> &gt; 0).</summary>
+    /// <summary>Screen angle in degrees as reported by the RIP (meaningful only if <see cref="ScreenLpi"/> > 0).</summary>
     public float ScreenAngle { get; set; }
     
     /// <summary>Screen ruling in lines per inch; 0 = unknown / not screened (solid or line art).</summary>
@@ -159,7 +159,7 @@ public class ProofSettings
     // Ink limiting
     public float InkLimit { get; set; } = 300.0f; // %
     
-    // Dot gain compensation
+    // Dot gain compensation (global fallback)
     public float DotGain { get; set; } = 0.0f; // %
     
     // Screen frequency for simulation
@@ -167,6 +167,13 @@ public class ProofSettings
     
     // Screening type
     public ScreeningType ScreeningType { get; set; } = ScreeningType.AM;
+    
+    // Per-plate TVI / Dot Gain curves (TVI = Tone Value Increase)
+    /// <summary>
+    /// Per-plate TVI curves for dot gain compensation. Key = SeparationColor.
+    /// If empty, standard offset curves are used.
+    /// </summary>
+    public Dictionary<SeparationColor, TVICurve> TVICurves { get; set; } = new();
     
     // Custom device link profile (optional)
     public string DeviceLinkProfilePath { get; set; } = string.Empty;
@@ -178,10 +185,6 @@ public class ProofSettings
     public PreflightSettings Preflight { get; set; } = new();
 }
 
-/// <summary>
-/// Per-press preflight thresholds. Defaults match the conservative values the checks shipped
-/// with; override them on the press profile (or per job) without code changes.
-/// </summary>
 public sealed class PreflightSettings
 {
     /// <summary>Label for the press these numbers belong to, shown in warnings.</summary>
@@ -211,6 +214,33 @@ public sealed class PreflightSettings
     /// <summary>How many gap pixels must be found before the trap check warns.</summary>
     public double TrapGapMinPixels { get; set; } = 4;
 
+    /// <summary>Enable barcode quiet zone and BWR check.</summary>
+    public bool EnableBarcodeCheck { get; set; } = true;
+
+    /// <summary>Minimum quiet zone width on each side of a barcode (mm).</summary>
+    public double BarcodeQuietZoneMm { get; set; } = 2.54; // 10x narrow bar for typical EAN/UPC
+
+    /// <summary>Maximum allowed bar width reduction (mm) — bars must not shrink more than this.</summary>
+    public double BarcodeBWRToleranceMm { get; set; } = 0.025; // ~1 mil
+
+    /// <summary>Minimum barcode height to consider for analysis (mm).</summary>
+    public double BarcodeMinHeightMm { get; set; } = 5.0;
+
+    /// <summary>Narrow bar width for the barcode symbology (mm). Used for quiet zone multiples.</summary>
+    public double BarcodeNarrowBarMm { get; set; } = 0.33; // typical EAN/UPC narrow bar
+
+    /// <summary>Enable dieline knockout/overprint check.</summary>
+    public bool EnableDielineCheck { get; set; } = true;
+
+    /// <summary>Maximum allowed ink under dieline as percentage of dieline area (percent).</summary>
+    public double DielineMaxInkUnderPercent { get; set; } = 0.1; // 0.1%
+
+    /// <summary>Maximum ink density (0-255) allowed under dieline before warning.</summary>
+    public int DielineMaxInkDensityUnderDieline { get; set; } = 32; // ~12.5%
+
+    /// <summary>Minimum dieline stroke width to analyze (mm).</summary>
+    public double DielineMinStrokeWidthMm { get; set; } = 0.15; // ~0.15mm minimum stroke
+
     /// <summary>
     /// Copy with values clamped to sane ranges. A typo (negative band, swapped limits) must not
     /// turn every plate into a warning, so bad input collapses to a usable range instead.
@@ -225,7 +255,16 @@ public sealed class PreflightSettings
         MeaningfulCoveragePercent = Math.Clamp(MeaningfulCoveragePercent, 0, 100),
         MissingSeparationPercent = Math.Clamp(MissingSeparationPercent, 0, MeaningfulCoveragePercent),
         TrapGapMm = Math.Clamp(TrapGapMm, 0.01, 2.0),
-        TrapGapMinPixels = Math.Clamp(TrapGapMinPixels, 1, 1_000_000)
+        TrapGapMinPixels = Math.Clamp(TrapGapMinPixels, 1, 1_000_000),
+        EnableBarcodeCheck = EnableBarcodeCheck,
+        BarcodeQuietZoneMm = Math.Clamp(BarcodeQuietZoneMm, 0.1, 100),
+        BarcodeBWRToleranceMm = Math.Clamp(BarcodeBWRToleranceMm, 0, 1),
+        BarcodeMinHeightMm = Math.Clamp(BarcodeMinHeightMm, 0.1, 1000),
+        BarcodeNarrowBarMm = Math.Clamp(BarcodeNarrowBarMm, 0.01, 10),
+        EnableDielineCheck = EnableDielineCheck,
+        DielineMaxInkUnderPercent = Math.Clamp(DielineMaxInkUnderPercent, 0, 10),
+        DielineMaxInkDensityUnderDieline = Math.Clamp(DielineMaxInkDensityUnderDieline, 0, 255),
+        DielineMinStrokeWidthMm = Math.Clamp(DielineMinStrokeWidthMm, 0.01, 10)
     };
 }
 
@@ -282,3 +321,6 @@ public class MeasurementRegion
     public int Height { get; set; }
     public string Name { get; set; } = string.Empty;
 }
+
+
+

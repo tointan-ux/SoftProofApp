@@ -6,3 +6,9 @@ obj2/
 *.user
 publish/
 dist/
+_site/
+api/
+docfx.json
+PrintJob_temp.cs
+*.ps1
+!scripts/*.ps1
