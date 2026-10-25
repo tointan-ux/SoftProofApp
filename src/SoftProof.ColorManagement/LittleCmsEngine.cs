@@ -131,24 +131,33 @@ internal static class LcmsNative
     public const int cmsFLAGS_LOWRESPRECALC = 0x00010000;
     public const int cmsFLAGS_SOFTPROOFING = 0x00040000;
     
-    // Formatter bits - use methods instead of parameterized constants
-    public static int BYTES_SH(int x) => (x << 0);
-    public static int CHANNELS_SH(int x) => (x << 8);
-    public static int FORMATTER_FLAGS_SH(int x) => (x << 16);
-    
-    // Formatter flags
-    public const int FLOAT_SH = (1 << 0);
-    public const int LITTLE_ENDIAN_SH = (1 << 1);
-    public const int SWAP_FIRST_SH = (1 << 2);
-    public const int OPTIMIZED_SH = (1 << 3);
-    public const int PLANAR_SH = (1 << 4);
-    public const int CAN_CHANGE_FORMATTER_SH = (1 << 5);
-    public const int DO_NOT_CHECK_SH = (1 << 6);
-    public const int EXTRA_SH = (1 << 7);
-    public const int ALPHA_FIRST_SH = (1 << 8);
-    public const int EXTRA_ALPHA_FIRST_SH = (1 << 9);
-    public const int GUESS_DEVICE_CLASS_SH = (1 << 10);
-    public const int KEEP_SEQUENCE_SH = (1 << 11);
+    // Formatter bit-layout helpers.
+    // In lcms2 these _SH constants are SHIFT AMOUNTS (bit positions), not
+    // ready-to-OR flag values.  The old code OR'd them directly, which set
+    // the wrong bits and produced garbage pixel-format descriptors.
+    // Correct usage:  (1 << FLOAT_SH) to set the float flag, etc.
+    public static int BYTES_SH(int x) => x;
+    public static int CHANNELS_SH(int x) => x << 3;
+    public static int FORMATTER_FLAGS_SH(int x) => x << 16;
+    public static int COLORSPACE_SH(int x) => x << 16;
+
+    // Shift amounts for formatter flags (per lcms2 cms.h)
+    public const int FLOAT_SH = 0;
+    public const int LITTLE_ENDIAN_SH = 1;
+    public const int SWAP_FIRST_SH = 2;
+    public const int OPTIMIZED_SH = 3;
+    public const int PLANAR_SH = 4;
+    public const int CAN_CHANGE_FORMATTER_SH = 5;
+    public const int DO_NOT_CHECK_SH = 6;
+    public const int EXTRA_SH = 7;
+    public const int ALPHA_FIRST_SH = 8;
+    public const int EXTRA_ALPHA_FIRST_SH = 9;
+    public const int GUESS_DEVICE_CLASS_SH = 10;
+    public const int KEEP_SEQUENCE_SH = 11;
+
+    // Pre-shifted flag values for convenience
+    public const int FLOAT_BIT = 1 << FLOAT_SH;          // 0x0001
+    public const int OPTIMIZED_BIT = 1 << OPTIMIZED_SH;  // 0x0008
     
     // Error handling
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
@@ -280,11 +289,16 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         if (settings.BlackPointCompensation)
             flags |= LcmsNative.cmsFLAGS_BLACKPOINTCOMPENSATION;
         
-        // Create proofing transform
+        // The proofing transform needs an actual input profile. We use the
+        // simulation profile as the input (document) profile — this is the
+        // standard soft-proofing setup where the document is already in the
+        // print space and we simulate how it will look on the display.
+        // Previously this passed IntPtr.Zero, which made the transform
+        // always fail or produce undefined output.
         var proofHandle = LcmsNative.cmsCreateProofingTransform(
-            IntPtr.Zero, inputFormat,  // Input profile will be set per-job
-            simulationProfile.Handle, proofingFormat,
+            simulationProfile.Handle, inputFormat,
             displayProfile.Handle, displayFormat,
+            simulationProfile.Handle, proofingFormat,
             (int)settings.RenderingIntent,
             (int)RenderingIntent.RelativeColorimetric, // Proofing intent
             flags);
@@ -295,11 +309,23 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             return await CreateProofTransformFallbackAsync(displayProfile, simulationProfile, settings, cancellationToken);
         }
         
-        return new ProofTransform
+        var transform = new ProofTransform
         {
             Settings = settings,
-            // Store handles for later use
         };
+        // Store the proofing transform handle in SimulationTransform so
+        // callers that use it get the combined proofing pipeline, and
+        // Dispose() will free it correctly.
+        // We wrap it in a ColorTransform so the existing disposal logic applies.
+        transform.SimulationTransform = new ColorTransform
+        {
+            Handle = proofHandle,
+            SourceProfile = simulationProfile,
+            DestProfile = displayProfile,
+            Intent = settings.RenderingIntent,
+            BlackPointCompensation = settings.BlackPointCompensation
+        };
+        return transform;
     }
     
     private async Task<ProofTransform> CreateProofTransformFallbackAsync(
@@ -309,8 +335,9 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         CancellationToken cancellationToken)
     {
         // Create simulation transform (document -> print simulation)
+        // Use the simulation profile as the source rather than a null handle.
         var simTransform = await CreateTransformAsync(
-            new IccProfile { ColorSpace = ColorSpace.CMYK, Handle = IntPtr.Zero }, // Placeholder
+            simulationProfile,
             simulationProfile,
             settings.RenderingIntent,
             settings.BlackPointCompensation,
@@ -466,6 +493,8 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     
     private int GetFormatter(ColorSpace colorSpace, bool isFloat)
     {
+        // Use the LittleCMS formatter builder macros correctly.
+        // The _SH constants are shift amounts, not direct bit values.
         var channels = colorSpace switch
         {
             ColorSpace.Gray => 1,
@@ -474,11 +503,14 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             _ => 4
         };
         
-        var bytes = isFloat ? 4 : 2; // 16-bit or 32-bit float
-        var formatter = (channels << 8) | (bytes << 0);
+        var bytes = isFloat ? 4 : 2; // 32-bit float or 16-bit integer
         
-        if (isFloat) formatter |= LcmsNative.FLOAT_SH;
-        formatter |= LcmsNative.OPTIMIZED_SH;
+        // Build format descriptor: channels in bits 3-10, bytes in bits 0-2
+        // per lcms2 TYPE_ definitions (CHANNELS_SH shifts by 3, BYTES_SH by 0)
+        var formatter = LcmsNative.CHANNELS_SH(channels) | LcmsNative.BYTES_SH(bytes);
+        
+        if (isFloat)
+            formatter |= LcmsNative.FLOAT_BIT;
         
         return formatter;
     }
