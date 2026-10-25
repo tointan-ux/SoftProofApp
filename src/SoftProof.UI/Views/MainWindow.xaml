@@ -80,7 +80,6 @@
                         <MenuItem Header="_Actual Size (1:1)" Command="{Binding ZoomActualSizeCommand}" InputGestureText="1" />
                         <MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}" InputGestureText="Ctrl++" />
                         <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}" InputGestureText="Ctrl+-" />
-                        <MenuItem Header="Zoom to _Dots (1600%)" Command="{Binding ZoomToDotsCommand}" />
                         <Separator />
                         <MenuItem Header="Side-by-side _Compare" Command="{Binding ToggleCompareCommand}" />
                     </MenuItem>
@@ -200,9 +199,6 @@
                                 <MenuItem Header="50%" Tag="0.5" Click="ZoomPreset_Click" />
                                 <MenuItem Header="100%" Tag="1" Click="ZoomPreset_Click" />
                                 <MenuItem Header="200%" Tag="2" Click="ZoomPreset_Click" />
-                                <MenuItem Header="400%" Tag="4" Click="ZoomPreset_Click" />
-                                <MenuItem Header="800%" Tag="8" Click="ZoomPreset_Click" />
-                                <MenuItem Header="1600%" Tag="16" Click="ZoomPreset_Click" />
                             </ContextMenu>
                         </Button.ContextMenu>
                     </Button>
@@ -616,11 +612,6 @@
                                          IsChecked="{Binding ViewMode, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=FilmBlackWhite}" />
                             <RadioButton GroupName="ViewMode" Content="Progressive" Style="{StaticResource SpSegmentTab}"
                                          IsChecked="{Binding ViewMode, Converter={StaticResource EnumEqualsConverter}, ConverterParameter=Progressive}" />
-                            <ToggleButton Content="Dots" Style="{StaticResource SpSegmentTab}"
-                                          IsChecked="{Binding IsDotsView, Mode=OneWay}"
-                                          Command="{Binding ZoomToDotsCommand}"
-                                          IsEnabled="{Binding HasRaster}"
-                                          ToolTip="Zoom to 1600% (16× native) to inspect individual pixels" />
                         </UniformGrid>
                     </Border>
 

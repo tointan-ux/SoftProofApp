@@ -295,6 +295,21 @@ public partial class MainWindow : Window
 
         CompareOverlay.Visibility = on && !sideBySide ? Visibility.Visible : Visibility.Collapsed;
 
+        if (sideBySide)
+        {
+            // The right pane is a full viewer: same tool (select-to-zoom, measure, densitometer),
+            // same view mode and the same zoom as the left pane.
+            CompareViewer.Tool = _viewModel.ActiveTool;
+            CompareViewer.ViewMode = _viewModel.ViewMode;
+            // Opening compare must not land on the plate's white margin: centre both panes
+            // on the artwork, then share that state.
+            if (_viewModel.HasRaster)
+                Viewer.CentreOnPlate();
+
+            var paneState = Viewer.GetViewState();
+            CompareViewer.SetViewCenter(paneState.CenterX, paneState.CenterY, paneState.Zoom);
+        }
+
         if (!on)
         {
             if (_plates.Count > 0)
@@ -443,10 +458,12 @@ public partial class MainWindow : Window
         {
             case nameof(MainViewModel.ActiveTool):
                 Viewer.Tool = _viewModel.ActiveTool;
+                CompareViewer.Tool = _viewModel.ActiveTool;
                 break;
             case nameof(MainViewModel.ViewMode):
                 _detailTiles.Clear();
                 Viewer.ViewMode = _viewModel.ViewMode;
+                CompareViewer.ViewMode = _viewModel.ViewMode;
                 break;
             case nameof(MainViewModel.ProgressiveCount):
                 _detailTiles.Clear();

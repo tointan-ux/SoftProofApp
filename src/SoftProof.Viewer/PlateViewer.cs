@@ -69,7 +69,8 @@ public sealed class CaliperEventArgs : EventArgs
 public class PlateViewer : FrameworkElement
 {
     private const double MinZoom = 0.01;
-    private const double MaxZoom = 512.0;
+    // Zoom above 100 % is disabled: the proof is inspected at 1:1 native, never magnified.
+    private const double MaxZoom = 1.0;
     
     private IReadOnlyList<PlateLayer> _plates = Array.Empty<PlateLayer>();
     private int _width;
@@ -929,6 +930,14 @@ public class PlateViewer : FrameworkElement
             ActualHeight / 2 - oriented.Y * scale);
         SnapToDevicePixels();
         NotifyViewChanged();
+    }
+
+    /// <summary>Centre the viewport on the plate centre (used when a compare pane opens).</summary>
+    public void CentreOnPlate()
+    {
+        if (_width <= 0 || _height <= 0)
+            return;
+        SetViewCenter(_width / 2.0, _height / 2.0);
     }
 
     /// <summary>Image-space centre of the viewport and the current zoom (for session restore).</summary>
