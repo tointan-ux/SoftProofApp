@@ -22,12 +22,12 @@
       },
       "MaterialDesignThemes": {
         "type": "Direct",
-        "requested": "[4.9.0, )",
-        "resolved": "4.9.0",
-        "contentHash": "Bp9Auw70j+9V7WsUMT4pc8ulVzfL0Eav/tyGgICDirxxhKJwhqtC/6PRkTUm+R1t9611xiDuk5pSUNdDV6vfOQ==",
+        "requested": "[5.4.0, )",
+        "resolved": "5.4.0",
+        "contentHash": "dOX3vBToKGe3tA/zMrtvz7BSnP+Omk0SL0IgAqLQgh3k92Qwm0GLPRip0xVTY0rwTYH3lTdPIhFh8x0J+KN27w==",
         "dependencies": {
-          "MaterialDesignColors": "2.1.4",
-          "Microsoft.Xaml.Behaviors.Wpf": "1.1.39"
+          "MaterialDesignColors": "5.4.0",
+          "Microsoft.Xaml.Behaviors.Wpf": "1.1.142"
         }
       },
       "Microsoft.CodeAnalysis.NetAnalyzers": {
