@@ -11,6 +11,6 @@
     <ProjectReference Include="..\SoftProof.RIPParsers\SoftProof.RIPParsers.csproj" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.5" />
-    <PackageReference Include="WriteableBitmapEx" Version="1.6.8" />
+    <PackageReference Include="WriteableBitmapEx" Version="1.6.11" />
   </ItemGroup>
 </Project>
