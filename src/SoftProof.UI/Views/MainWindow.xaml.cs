@@ -108,6 +108,7 @@ public partial class MainWindow : Window
         // The overlay modes have their own zoom; keep the readout showing the real scale.
         CompareOverlay.ZoomChanged += (_, nativeZoom) => _viewModel.UpdateOverlayZoom(nativeZoom);
 
+        CompareOverlay.NativeLayerProvider = ProvideOverlayNativeLayer;
         CompareOverlay.DifferenceThreshold = _viewModel.DifferenceThreshold;
         CompareOverlay.DifferenceMeasured += (_, percent) =>
         {
@@ -690,6 +691,68 @@ public partial class MainWindow : Window
         if (!_detailStates.TryGetValue(viewer, out var state))
             _detailStates[viewer] = state = new DetailState();
         return state;
+    }
+
+    private string _overlayNativeKey = string.Empty;
+    private (BitmapSource Bitmap, Rect BaseRect)? _overlayNativeValue;
+
+    /// <summary>
+    /// Native-resolution pixels for a single-canvas compare side, decoded on demand for
+    /// the visible region only. Falls back to null so the overlay uses its coverage path.
+    /// </summary>
+    private (BitmapSource Bitmap, Rect BaseRect)? ProvideOverlayNativeLayer(int side, Rect visibleBase)
+    {
+        try
+        {
+            if (visibleBase.Width < 1 || visibleBase.Height < 1)
+                return null;
+
+            var plate = side == 0
+                ? _viewModel.CompareLeft?.Layer
+                : (_viewModel.CompareRightIsExternal
+                    ? _viewModel.CompareExternalLayers.FirstOrDefault()
+                    : _viewModel.CompareRight?.Layer);
+
+            if (plate is null)
+                return null;
+
+            var source = OpenSource(plate);
+            if (source is null)
+                return null;
+
+            var factor = Math.Max(1, Viewer.NativeFactor);
+            var info = source.Info;
+
+            var nx0 = (int)Math.Clamp(Math.Floor(visibleBase.X * factor), 0, info.Width - 1);
+            var ny0 = (int)Math.Clamp(Math.Floor(visibleBase.Y * factor), 0, info.Height - 1);
+            var nx1 = (int)Math.Clamp(Math.Ceiling(visibleBase.Right * factor), nx0 + 1L, info.Width);
+            var ny1 = (int)Math.Clamp(Math.Ceiling(visibleBase.Bottom * factor), ny0 + 1L, info.Height);
+
+            var ow = nx1 - nx0;
+            var oh = ny1 - ny0;
+            if (ow < 1 || oh < 1 || (long)ow * oh > 24_000_000)
+                return null;
+
+            var key = plate.GetHashCode() + "|" + nx0 + "|" + ny0 + "|" + ow + "|" + oh;
+            if (key == _overlayNativeKey && _overlayNativeValue is { } cached)
+                return cached;
+
+            var bitmap = Task.Run(() => RenderDetailTileAsync(
+                    new[] { (plate, source) }, nx0, ny0, ow, oh, 1, CancellationToken.None))
+                .GetAwaiter().GetResult();
+
+            var baseRect = new Rect(nx0 / (double)factor, ny0 / (double)factor,
+                                    ow / (double)factor, oh / (double)factor);
+            var value = (bitmap, baseRect);
+            _overlayNativeKey = key;
+            _overlayNativeValue = value;
+            return value;
+        }
+        catch (Exception ex)
+        {
+            DiagnosticsLog.Info($"overlay native layer failed: {ex.Message}");
+            return null;
+        }
     }
 
     private async void OnDetailRequested(object? sender, DetailRequest request)

@@ -477,10 +477,60 @@ public sealed class PlateCompareView : FrameworkElement
     }
 
     /// <summary>Draws one separation from its native coverage at device resolution.</summary>
+    /// <summary>Viewport in base-image pixels, clamped to the plate.</summary>
+    private Rect VisibleBaseRect()
+    {
+        if (_bw <= 0 || _bh <= 0 || _imageRect.Width <= 0)
+            return Rect.Empty;
+
+        var x0 = Math.Max(0, (0 - _imageRect.X) / _imageRect.Width * _bw);
+        var y0 = Math.Max(0, (0 - _imageRect.Y) / _imageRect.Height * _bh);
+        var x1 = Math.Min(_bw, (ActualWidth - _imageRect.X) / _imageRect.Width * _bw);
+        var y1 = Math.Min(_bh, (ActualHeight - _imageRect.Y) / _imageRect.Height * _bh);
+        return new Rect(x0, y0, Math.Max(0, x1 - x0), Math.Max(0, y1 - y0));
+    }
+
+    /// <summary>Draw a bitmap that covers <paramref name="baseRect"/> of the image, at device resolution.</summary>
+    private void DrawNativeBitmap(DrawingContext dc, BitmapSource bmp, Rect baseRect, Int32Rect? clip, bool clear, bool blit)
+    {
+        if (_bw <= 0 || _bh <= 0 || _imageRect.Width <= 0 || bmp.PixelWidth <= 0)
+            return;
+
+        var pw = EnsureDevice(out var ph, clear);
+        var dpi = VisualTreeHelper.GetDpi(this);
+
+        var destX = _imageRect.X + baseRect.X / _bw * _imageRect.Width;
+        var destY = _imageRect.Y + baseRect.Y / _bh * _imageRect.Height;
+        var destW = baseRect.Width / _bw * _imageRect.Width;
+        var destH = baseRect.Height / _bh * _imageRect.Height;
+
+        if (destW <= 0 || destH <= 0)
+            return;
+
+        var m = new Matrix(destW / bmp.PixelWidth, 0, 0, destH / bmp.PixelHeight, destX, destY);
+
+        ViewportResampler.Draw(bmp, new Rect(0, 0, bmp.PixelWidth, bmp.PixelHeight), m,
+            dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!, 1.0, clip);
+
+        if (blit)
+            BlitDevice(dc);
+    }
+
     private void DrawCoverageDevice(DrawingContext dc, PlateLayer? layer, byte[]? cov, int cw, int ch, Int32Rect? clip, bool clear = true, bool blit = true)
     {
         if (layer is null || cov is null || cw <= 0 || ch <= 0 || _imageRect.Width <= 0)
             return;
+
+        if (NativeLayerProvider is not null)
+        {
+            var side = ReferenceEquals(layer, _rightLayer) ? 1 : 0;
+            var native = NativeLayerProvider(side, VisibleBaseRect());
+            if (native is { } n && n.BaseRect.Width > 0)
+            {
+                DrawNativeBitmap(dc, n.Bitmap, n.BaseRect, clip, clear, blit);
+                return;
+            }
+        }
 
         var pw = EnsureDevice(out var ph, clear);
         var dpi = VisualTreeHelper.GetDpi(this);
@@ -812,6 +862,12 @@ public sealed class PlateCompareView : FrameworkElement
     }
 
     /// <summary>Zoom in plate terms: 1.0 shows one plate pixel per DIP, exactly like the main canvas.</summary>
+    /// <summary>
+    /// Supplies a native-resolution bitmap for one side (0 = A, 1 = B) covering the
+    /// requested base-image rect, plus the base rect that bitmap represents.
+    /// </summary>
+    public Func<int, Rect, (BitmapSource Bitmap, Rect BaseRect)?>? NativeLayerProvider;
+
     public double NativeZoom =>
         _plateWidth > 0 && _imageRect.Width > 0 ? _imageRect.Width / _plateWidth : _zoom;
 
