@@ -4,9 +4,9 @@
     "net8.0-windows7.0": {
       "BitMiracle.LibTiff.NET": {
         "type": "Direct",
-        "requested": "[2.4.649, )",
-        "resolved": "2.4.649",
-        "contentHash": "XCEdfCphKo0UAvSg1h/OzOFWtjkIGnPMAziYkNqV7NVrqb/tZJTBxJhxIEX7gpvQwg8GIRYt133SUncfkKfjLA=="
+        "requested": "[2.4.660, )",
+        "resolved": "2.4.660",
+        "contentHash": "Drd0fDFVrR3v19IJtqiDVnjgcVZoGlzFw/CYni1OQ5/xVYvjPNp18E9eu+dH/RmpIUw6Pn/JhE/H+Yc3kHI89A=="
       },
       "FluentAssertions": {
         "type": "Direct",

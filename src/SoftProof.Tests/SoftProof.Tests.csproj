@@ -28,6 +28,6 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Reference decoder: managed port of libtiff, used only to cross-check our strip decode. -->
-    <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.649" />
+    <PackageReference Include="BitMiracle.LibTiff.NET" Version="2.4.660" />
   </ItemGroup>
 </Project>
