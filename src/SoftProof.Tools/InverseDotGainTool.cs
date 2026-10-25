@@ -460,11 +460,29 @@ public class InverseDotGainTool
     
     private float ComputeQualityScore(StochasticAnalysis analysis)
     {
-        // Weighted scoring
+        // Weighted scoring (0-100, higher = better stochastic quality).
+        //
+        // The old formula subtracted Granularity * 200, but Granularity is the
+        // RMS deviation of 0/1 pixel data. For a 50% screen that is ~0.5, so
+        // 0.5 * 200 = 100 — which zeroed the score for every realistic screen.
+        //
+        // Granularity for a good FM screen at 50% coverage is still ~0.5
+        // (binary pixels), so we normalise it against the theoretical max
+        // (0.5 for a two-value distribution) and scale gently.
+        
         var score = 100f;
-        score -= analysis.Granularity * 200; // Lower granularity = better
-        score += analysis.SpectralUniformity * 30; // More uniform = better
-        score -= analysis.ClusteringIndex * 40; // Less clustering = better
+        
+        // Granularity: normalise to [0,1] range (max RMS for binary data is 0.5).
+        // Lower granularity relative to the theoretical max = better.
+        var granularityPenalty = Math.Clamp(analysis.Granularity / 0.5f, 0, 1) * 30f;
+        score -= granularityPenalty;
+        
+        // Spectral uniformity: [0,1], more uniform spectrum = better stochastic.
+        score += analysis.SpectralUniformity * 30f;
+        
+        // Clustering: [0,1], lower clustering = better stochastic distribution.
+        // Ideal FM has clustering index near 0 (no neighbor preference).
+        score -= analysis.ClusteringIndex * 40f;
         
         return Math.Clamp(score, 0, 100);
     }
