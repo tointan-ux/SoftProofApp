@@ -67,7 +67,14 @@ public partial class MainWindow : Window
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         
         // Viewer -> view model
-        Viewer.ViewChanged += (_, _) => OnViewChanged();
+        Viewer.ViewChanged += (_, _) =>
+        {
+            OnViewChanged();
+
+            // Zoom/pan on the left pane must drive the compare pane as well, otherwise
+            // side-by-side looks frozen on the right.
+            SyncCompare(Viewer, CompareViewer);
+        };
         Viewer.CursorMoved += (_, point) => _viewModel.OnCursorMoved(point);
         Viewer.RectangleChanged += (_, e) => _viewModel.OnRectangleMeasured(e.Bounds, e.Completed);
         CompareViewer.CursorMoved += (_, point) => _viewModel.OnCursorMoved(point);
