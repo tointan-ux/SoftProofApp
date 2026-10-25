@@ -1056,6 +1056,13 @@ public class PlateViewer : FrameworkElement
         }
         else if (e.ChangedButton == MouseButton.Left && _tool == ViewerTool.Select)
         {
+            // Marquee zoom is a plate operation: dragging on the margin/canvas does nothing.
+            if (!IsInsidePlate(ScreenToImage(pos)))
+            {
+                e.Handled = true;
+                return;
+            }
+
             _selecting = true;
             _selectStartScreen = _selectCurrentScreen = pos;
             CaptureMouse();
@@ -1462,6 +1469,12 @@ public class PlateViewer : FrameworkElement
         dc.DrawRectangle(null, pen, new Rect(c.X - size / 2, c.Y - size / 2, size, size));
     }
     
+    /// <summary>True when an image-space point lies on the plate itself (not the canvas margin).</summary>
+    private bool IsInsidePlate(Point imagePoint) =>
+        _width > 0 && _height > 0 &&
+        imagePoint.X >= 0 && imagePoint.Y >= 0 &&
+        imagePoint.X <= _width && imagePoint.Y <= _height;
+
     private void DrawCaliper(DrawingContext dc)
     {
         if (_caliperStart is not { } s || _caliperEnd is not { } e) return;
@@ -1486,10 +1499,14 @@ public class PlateViewer : FrameworkElement
                 new Typeface("Consolas"), 12, Brushes.White,
                 VisualTreeHelper.GetDpi(this).PixelsPerDip);
 
-            var label = new Point(box.Left + 8, box.Top - boxText.Height - 8);
-            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(220, 15, 21, 32)), null,
-                new Rect(label.X - 4, label.Y - 2, boxText.Width + 8, boxText.Height + 4), 3, 3);
-            dc.DrawText(boxText, label);
+            // The reading pill belongs to the plate, not to the grey margin.
+            if (IsInsidePlate(new Point(Math.Min(s.X, e.X), Math.Min(s.Y, e.Y))))
+            {
+                var label = new Point(box.Left + 8, box.Top - boxText.Height - 8);
+                dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(220, 15, 21, 32)), null,
+                    new Rect(label.X - 4, label.Y - 2, boxText.Width + 8, boxText.Height + 4), 3, 3);
+                dc.DrawText(boxText, label);
+            }
             return;
         }
 
@@ -1513,9 +1530,13 @@ public class PlateViewer : FrameworkElement
             new Typeface("Consolas"), 12, Brushes.White,
             VisualTreeHelper.GetDpi(this).PixelsPerDip);
         
-        var mid = new Point((a.X + b.X) / 2 + 8, (a.Y + b.Y) / 2 - text.Height - 6);
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(220, 15, 21, 32)), null,
-            new Rect(mid.X - 4, mid.Y - 2, text.Width + 8, text.Height + 4), 3, 3);
-        dc.DrawText(text, mid);
+        var pillCentre = new Point((s.X + e.X) / 2, (s.Y + e.Y) / 2);
+        if (IsInsidePlate(pillCentre))
+        {
+            var mid = new Point((a.X + b.X) / 2 + 8, (a.Y + b.Y) / 2 - text.Height - 6);
+            dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(220, 15, 21, 32)), null,
+                new Rect(mid.X - 4, mid.Y - 2, text.Width + 8, text.Height + 4), 3, 3);
+            dc.DrawText(text, mid);
+        }
     }
 }
