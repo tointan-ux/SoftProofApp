@@ -212,43 +212,15 @@
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <ToggleButton x:Name="CaliperToggle" Style="{StaticResource SpToolToggle}"
-                                  ToolTip="Precision caliper — click for instructions and reading">
+                    <ToggleButton Style="{StaticResource SpToolToggle}"
+                                  ToolTip="Side-by-side compare — two plates, synchronised zoom and pan"
+                                  IsChecked="{Binding IsCompareMode, Mode=OneWay}"
+                                  Command="{Binding ToggleCompareCommand}">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="RulerSquare" Width="16" Height="16" />
-                            <TextBlock Text="Caliper" Margin="6,0,0,0" />
+                            <materialDesign:PackIcon Kind="Compare" Width="16" Height="16" />
+                            <TextBlock Text="Side-by-side" Margin="6,0,0,0" />
                         </StackPanel>
                     </ToggleButton>
-                    <Popup x:Name="CaliperPopup" PlacementTarget="{Binding ElementName=CaliperToggle}"
-                           Placement="Bottom" StaysOpen="False" AllowsTransparency="True"
-                           IsOpen="{Binding IsChecked, ElementName=CaliperToggle, Mode=TwoWay}">
-                        <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
-                                BorderThickness="1" CornerRadius="8" Padding="12" MaxWidth="360">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,8">
-                                    <TextBlock DockPanel.Dock="Right" Text="KEY M" FontSize="10"
-                                               Style="{StaticResource SpMuted}" />
-                                    <TextBlock Text="PRECISION CALIPER (MM)" FontSize="10" FontWeight="Bold"
-                                               Foreground="{StaticResource SpWarning}" />
-                                </DockPanel>
-                                <TextBlock Text="Choose Measure (or press M), then click and drag. Rectangle mode (or Shift-drag) reports width × height, area and perimeter."
-                                           FontSize="11" Style="{StaticResource SpMuted}" TextWrapping="Wrap" />
-                                <ToggleButton Content="Rectangle (2D)" IsChecked="{Binding RectangleMeasure}"
-                                              Margin="0,8,0,0" HorizontalAlignment="Left" Padding="8,3" FontSize="11"
-                                              ToolTip="Drag a rectangle instead of a line; hold Shift for a one-off rectangle" />
-                                <StackPanel Margin="0,8,0,0"
-                                            Visibility="{Binding HasCaliper, Converter={StaticResource BoolToVisibilityConverter}}">
-                                    <TextBlock Text="{Binding CaliperText}" FontFamily="Consolas" FontSize="22"
-                                               FontWeight="SemiBold" Foreground="{StaticResource SpWarning}" />
-                                    <TextBlock Text="{Binding CaliperDetail}" FontFamily="Consolas"
-                                               Style="{StaticResource SpMuted}" Margin="0,3,0,0" />
-                                </StackPanel>
-                                <Button Content="Select Measure tool" Margin="0,10,0,0" Padding="8,3"
-                                        HorizontalAlignment="Left"
-                                        Command="{Binding SetToolCommand}" CommandParameter="{x:Static viewer:ViewerTool.Measure}" />
-                            </StackPanel>
-                        </Border>
-                    </Popup>
                     <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowOriginalPixels}"
                                   ToolTip="Zoom to 100% of the plate and stream native pixels">
                         <StackPanel Orientation="Horizontal">

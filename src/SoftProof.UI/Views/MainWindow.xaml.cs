@@ -52,7 +52,17 @@ public partial class MainWindow : Window
             _detailTiles.Clear();
             Viewer.Refresh();
         };
-        _viewModel.ZoomRequested += (_, zoom) => Viewer.ZoomNativeTo(zoom);
+        _viewModel.ZoomRequested += (_, zoom) =>
+        {
+            Viewer.ZoomNativeTo(zoom);
+
+            // Side-by-side: the toolbar zoom must move both panes, keeping their centres aligned.
+            if (_viewModel.IsCompareMode)
+            {
+                var state = Viewer.GetViewState();
+                CompareViewer.SetViewCenter(state.CenterX, state.CenterY, state.Zoom);
+            }
+        };
         _viewModel.FitToWindowRequested += (_, _) => Viewer.FitToView();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         
