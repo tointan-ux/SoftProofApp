@@ -54,6 +54,8 @@ public sealed class PlateCompareView : FrameworkElement
     private int _deviceHeight;
     private double _pendingNativeZoom = double.NaN;
     private double _lastReportedNativeZoom = double.NaN;
+    private PlateLayer? _leftLayer;
+    private PlateLayer? _rightLayer;
     private int _plateWidth;      // plate pixels, so 100 % means one plate pixel per DIP
     private double _panX;
     private double _panY;
@@ -149,7 +151,9 @@ public sealed class PlateCompareView : FrameworkElement
 
     public void SetPlates(PlateLayer? left, PlateLayer? right)
     {
+        _leftLayer = left;
         _leftCoverage = left is null ? null : BuildCoverage(left, out _left);
+        _rightLayer = right;
         _rightCoverage = right is null ? null : BuildCoverage(right, out _right);
         _leftW = _left?.PixelWidth ?? 0;
         _leftH = _left?.PixelHeight ?? 0;
@@ -400,9 +404,179 @@ public sealed class PlateCompareView : FrameworkElement
         dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
     }
 
+    private int EnsureDevice(out int ph, bool clear = true)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var pw = Math.Max(1, (int)Math.Round(ActualWidth * dpi.DpiScaleX));
+        ph = Math.Max(1, (int)Math.Round(ActualHeight * dpi.DpiScaleY));
+
+        if (_deviceBitmap is null || _deviceWidth != pw || _deviceHeight != ph)
+        {
+            _deviceBitmap = new WriteableBitmap(pw, ph, 96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Bgra32, null);
+            _devicePixels = new byte[pw * ph * 4];
+            _deviceWidth = pw;
+            _deviceHeight = ph;
+        }
+
+        if (clear)
+            Array.Clear(_devicePixels!, 0, _devicePixels!.Length);
+
+        return pw;
+    }
+
+    private void BlitDevice(DrawingContext dc)
+    {
+        var pw = _deviceWidth;
+        var ph = _deviceHeight;
+        _deviceBitmap!.WritePixels(new Int32Rect(0, 0, pw, ph), _devicePixels!, pw * 4, 0);
+        RenderOptions.SetBitmapScalingMode(_deviceBitmap, BitmapScalingMode.NearestNeighbor);
+        dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
+    }
+
+    /// <summary>Coverage averaged over a plate-pixel rectangle (nearest when magnified).</summary>
+    private static float SampleCoverage(byte[] cov, int w, int h, double sx0, double sy0, double sx1, double sy1)
+    {
+        var ix0 = (int)Math.Floor(sx0);
+        var iy0 = (int)Math.Floor(sy0);
+        var ix1 = (int)Math.Ceiling(sx1);
+        var iy1 = (int)Math.Ceiling(sy1);
+
+        if (ix1 <= ix0) ix1 = ix0 + 1;
+        if (iy1 <= iy0) iy1 = iy0 + 1;
+
+        ix0 = Math.Clamp(ix0, 0, w - 1);
+        iy0 = Math.Clamp(iy0, 0, h - 1);
+        ix1 = Math.Clamp(ix1, ix0 + 1, w);
+        iy1 = Math.Clamp(iy1, iy0 + 1, h);
+
+        long sum = 0;
+        for (var y = iy0; y < iy1; y++)
+        {
+            var row = y * w;
+            for (var x = ix0; x < ix1; x++)
+                sum += cov[row + x];
+        }
+
+        return sum / (float)((ix1 - ix0) * (iy1 - iy0));
+    }
+
+    /// <summary>Draws one separation from its native coverage at device resolution.</summary>
+    private void DrawCoverageDevice(DrawingContext dc, PlateLayer? layer, byte[]? cov, int cw, int ch, Int32Rect? clip, bool clear = true, bool blit = true)
+    {
+        if (layer is null || cov is null || cw <= 0 || ch <= 0 || _imageRect.Width <= 0)
+            return;
+
+        var pw = EnsureDevice(out var ph, clear);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var rect = _imageRect;
+
+        var x0 = Math.Max(0, clip?.X ?? 0);
+        var y0 = Math.Max(0, clip?.Y ?? 0);
+        var x1 = Math.Min(pw, clip is { } c0 ? c0.X + c0.Width : pw);
+        var y1 = Math.Min(ph, clip is { } c1 ? c1.Y + c1.Height : ph);
+
+        var kr = 1f - layer.R / 255f;
+        var kg = 1f - layer.G / 255f;
+        var kb = 1f - layer.B / 255f;
+
+        for (var py = y0; py < y1; py++)
+        {
+            var dy0 = py / dpi.DpiScaleY;
+            var dy1 = (py + 1) / dpi.DpiScaleY;
+            if (dy1 < rect.Top || dy0 > rect.Bottom)
+                continue;
+
+            var sy0 = (dy0 - rect.Top) / rect.Height * ch;
+            var sy1 = (dy1 - rect.Top) / rect.Height * ch;
+
+            for (var px = x0; px < x1; px++)
+            {
+                var dx0 = px / dpi.DpiScaleX;
+                var dx1 = (px + 1) / dpi.DpiScaleX;
+                if (dx1 < rect.Left || dx0 > rect.Right)
+                    continue;
+
+                var sx0 = (dx0 - rect.Left) / rect.Width * cw;
+                var sx1 = (dx1 - rect.Left) / rect.Width * cw;
+
+                var c = SampleCoverage(cov, cw, ch, sx0, sy0, sx1, sy1) / 255f;
+                var o = (py * pw + px) * 4;
+                _devicePixels![o] = (byte)(255f * (1f - c * kb));
+                _devicePixels[o + 1] = (byte)(255f * (1f - c * kg));
+                _devicePixels[o + 2] = (byte)(255f * (1f - c * kr));
+                _devicePixels[o + 3] = 255;
+            }
+        }
+
+        if (blit)
+            BlitDevice(dc);
+    }
+
+    /// <summary>Per-pixel difference straight from both native coverages.</summary>
+    private void DrawDifferenceDevice(DrawingContext dc)
+    {
+        if (_leftCoverage is null && _rightCoverage is null)
+            return;
+
+        var pw = EnsureDevice(out var ph);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var rect = _imageRect;
+
+        var leftCov = _leftCoverage;
+        var rightCov = _rightCoverage;
+        var lw = _leftW;
+        var lh = _leftH;
+        var rw = _rightW;
+        var rh = _rightH;
+
+        for (var py = 0; py < ph; py++)
+        {
+            var dy0 = py / dpi.DpiScaleY;
+            var dy1 = (py + 1) / dpi.DpiScaleY;
+            if (dy1 < rect.Top || dy0 > rect.Bottom)
+                continue;
+
+            for (var px = 0; px < pw; px++)
+            {
+                var dx0 = px / dpi.DpiScaleX;
+                var dx1 = (px + 1) / dpi.DpiScaleX;
+                if (dx1 < rect.Left || dx0 > rect.Right)
+                    continue;
+
+                var nx0 = (dx0 - rect.Left) / rect.Width;
+                var nx1 = (dx1 - rect.Left) / rect.Width;
+                var ny0 = (dy0 - rect.Top) / rect.Height;
+                var ny1 = (dy1 - rect.Top) / rect.Height;
+
+                var l = leftCov is null ? 0f : SampleCoverage(leftCov, lw, lh, nx0 * lw, ny0 * lh, nx1 * lw, ny1 * lh);
+                var r = rightCov is null ? 0f : SampleCoverage(rightCov, rw, rh, nx0 * rw, ny0 * rh, nx1 * rw, ny1 * rh);
+                var delta = Math.Abs(l - r);
+
+                var o = (py * pw + px) * 4;
+                if (delta > DifferenceThreshold)
+                {
+                    _devicePixels![o] = 40;
+                    _devicePixels[o + 1] = 40;
+                    _devicePixels[o + 2] = 235;
+                }
+                else
+                {
+                    var common = (byte)(245 - Math.Min(l, r) / 3);
+                    _devicePixels![o] = common;
+                    _devicePixels[o + 1] = common;
+                    _devicePixels[o + 2] = common;
+                }
+
+                _devicePixels[o + 3] = 255;
+            }
+        }
+
+        BlitDevice(dc);
+    }
+
     private void DrawSlide(DrawingContext dc)
     {
-        DrawDevice(dc, _left, null);
+        DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null, clear: true, blit: false);
 
         var splitX = _imageRect.Left + _imageRect.Width * _slide;
 
@@ -410,7 +584,9 @@ public sealed class PlateCompareView : FrameworkElement
         {
             var dpi = VisualTreeHelper.GetDpi(this);
             var clipWidth = (int)Math.Max(0, Math.Round(splitX * dpi.DpiScaleX));
-            DrawDevice(dc, _right, new Int32Rect(0, 0, clipWidth, _deviceHeight));
+            DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH,
+                new Int32Rect(0, 0, clipWidth, _deviceHeight), clear: false, blit: false);
+            BlitDevice(dc);
         }
 
         var pen = new Pen(new SolidColorBrush(Color.FromRgb(255, 190, 60)), 1.5);
@@ -427,7 +603,10 @@ public sealed class PlateCompareView : FrameworkElement
 
     private void DrawBlink(DrawingContext dc)
     {
-        DrawDevice(dc, _showRight ? _right : _left, null);
+        if (_showRight)
+            DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH, null);
+        else
+            DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null);
 
         DrawBadge(dc, _showRight ? "B" : "A", _imageRect.Left + 10, _imageRect.Top + 10);
     }
@@ -449,7 +628,7 @@ public sealed class PlateCompareView : FrameworkElement
         DifferencePercent = _differencePercent;
         DifferenceMeasured?.Invoke(this, _differencePercent);
 
-        DrawDevice(dc, _difference, null);
+        DrawDifferenceDevice(dc);
         DrawBadge(dc, $"{_differencePercent:0.00}% differs", _imageRect.Left + 10, _imageRect.Top + 10);
     }
 
