@@ -115,6 +115,13 @@ public class PlateViewer : FrameworkElement
     public IReadOnlyList<PlateLayer> Plates => _plates;
     
     private Matrix _view = Matrix.Identity;
+
+    // Device-pixel render target: the composited view is built at the monitor's physical
+    // resolution and blitted 1:1, so WPF never resamples it.
+    private WriteableBitmap? _deviceBitmap;
+    private byte[]? _devicePixels;
+    private int _deviceWidth;
+    private int _deviceHeight;
     private bool _fitPending;
     
     private bool _panning;
@@ -1185,42 +1192,93 @@ public class PlateViewer : FrameworkElement
         var drawMatrix = _orientation.GetMatrix(_width, _height);
         drawMatrix.Append(_view);
 
-        dc.PushTransform(new MatrixTransform(drawMatrix));
-        dc.DrawImage(_bitmap, _renderRect);
-        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
-            dc.DrawImage(_detailBitmap, _detailRect);
-
-        // Back side mirrored over the front: the classic registration/bleed-through check.
-        if (_backSideOpacity > 0.001)
+        // Above 50 % the view is rasterised at device resolution and shown 1:1; below that the
+        // magnified bitmap path is cheaper and equally soft either way.
+        if (NativeZoom >= 0.5 && ActualWidth > 0 && ActualHeight > 0)
         {
-            // The back side mirrors along the axis the user is flipping: left/right, top/bottom,
-            // or both. This keeps the bleed-through check aligned with the flip switch.
-            var backMatrix = (_orientation.FlipHorizontal, _orientation.FlipVertical) switch
-            {
-                (true, true) => new Matrix(-1, 0, 0, -1, _width, _height),
-                (false, true) => new Matrix(1, 0, 0, -1, 0, _height),
-                _ => new Matrix(-1, 0, 0, 1, _width, 0)
-            };
-
-            dc.PushOpacity(_backSideOpacity);
-            dc.PushTransform(new MatrixTransform(backMatrix));
+            RenderDeviceResolution(dc, drawMatrix);
+        }
+        else
+        {
+            dc.PushTransform(new MatrixTransform(drawMatrix));
             dc.DrawImage(_bitmap, _renderRect);
+            if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+                dc.DrawImage(_detailBitmap, _detailRect);
             dc.Pop();
-            dc.Pop();
+            RenderBackSide(dc);
+            DrawOverlaysAndChrome(dc);
+            return;
         }
 
-        dc.Pop();
+        RenderBackSide(dc);
+        DrawOverlaysAndChrome(dc);
+    }
 
+    private void RenderDeviceResolution(DrawingContext dc, Matrix drawMatrix)
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var pw = Math.Max(1, (int)Math.Round(ActualWidth * dpi.DpiScaleX));
+        var ph = Math.Max(1, (int)Math.Round(ActualHeight * dpi.DpiScaleY));
+
+        if (_deviceBitmap is null || _deviceWidth != pw || _deviceHeight != ph)
+        {
+            _deviceBitmap = new WriteableBitmap(pw, ph, 96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Bgra32, null);
+            _devicePixels = new byte[pw * ph * 4];
+            _deviceWidth = pw;
+            _deviceHeight = ph;
+        }
+
+        Array.Clear(_devicePixels!, 0, _devicePixels!.Length);
+        if (_bitmap is not null)
+            ViewportResampler.Draw(_bitmap, _renderRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
+
+        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+            ViewportResampler.Draw(_detailBitmap, _detailRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
+
+        _deviceBitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _devicePixels!, pw * 4, 0);
+
+        RenderOptions.SetBitmapScalingMode(_deviceBitmap, BitmapScalingMode.NearestNeighbor);
+        dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
+    }
+
+    private void RenderBackSide(DrawingContext dc)
+    {
+        if (_backSideOpacity <= 0.001 || _bitmap is null)
+            return;
+
+        // The back side mirrors along the axis the user is flipping: left/right, top/bottom,
+        // or both. This keeps the bleed-through check aligned with the flip switch.
+        var backMatrix = (_orientation.FlipHorizontal, _orientation.FlipVertical) switch
+        {
+            (true, true) => new Matrix(-1, 0, 0, -1, _width, _height),
+            (false, true) => new Matrix(1, 0, 0, -1, 0, _height),
+            _ => new Matrix(-1, 0, 0, 1, _width, 0)
+        };
+
+        var drawMatrix = _orientation.GetMatrix(_width, _height);
+        drawMatrix.Append(_view);
+
+        dc.PushTransform(new MatrixTransform(drawMatrix));
+        dc.PushOpacity(_backSideOpacity);
+        dc.PushTransform(new MatrixTransform(backMatrix));
+        dc.DrawImage(_bitmap, _renderRect);
+        dc.Pop();
+        dc.Pop();
+        dc.Pop();
+    }
+
+    private void DrawOverlaysAndChrome(DrawingContext dc)
+    {
         DrawContentOverlay(dc);
         DrawResolutionBadge(dc);
         DrawOrientationBadge(dc);
-        
+
         // Page border
         var topLeft = ImageToScreen(new Point(0, 0));
         var bottomRight = ImageToScreen(new Point(_width, _height));
         dc.DrawRectangle(null, new Pen(new SolidColorBrush(Color.FromRgb(60, 72, 96)), 1),
             new Rect(topLeft, bottomRight));
-        
+
         if (_selecting && _selectStartScreen is { } ms && _selectCurrentScreen is { } mc)
         {
             var marquee = new Rect(ms, mc);
@@ -1235,7 +1293,7 @@ public class PlateViewer : FrameworkElement
         DrawDensitometerMarker(dc);
         DrawCaliper(dc);
     }
-    
+
     private void DrawOrientationBadge(DrawingContext dc)
     {
         if (_bitmap is null || _orientation.IsIdentity)
