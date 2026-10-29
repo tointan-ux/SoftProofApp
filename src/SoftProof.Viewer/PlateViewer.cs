@@ -117,7 +117,64 @@ public class PlateViewer : FrameworkElement
     /// <summary>Layers currently shown (used by the host to decode native tiles per pane).</summary>
     public IReadOnlyList<PlateLayer> Plates => _plates;
     
-    private Matrix _view = Matrix.Identity;
+    /// <summary>
+    /// The camera — the single source of truth for zoom and pan, in native plate pixels.
+    /// The render matrix is derived from it, so <c>Zoom</c>, the readout, hit-testing and
+    /// the detail requests can no longer disagree about what 100 % means.
+    /// </summary>
+    private ViewTransform _camera = new(1.0, 0.5, 0.5, 1.0, 1.0);
+
+    private Matrix _view => BuildViewMatrix();
+
+    /// <summary>Derive the base-pixel → DIP matrix from <see cref="_camera"/>.</summary>
+    private Matrix BuildViewMatrix() => MatrixFromCamera(_camera, _nativeFactor);
+
+    /// <summary>
+    /// Adopt a mutated matrix as the camera. The camera is expressed in the current viewport
+    /// size, otherwise its centre would be measured against a stale frame and only the scale
+    /// would be meaningful.
+    /// </summary>
+    private void SetCamera(Matrix m)
+    {
+        var w = ActualWidth > 0 ? ActualWidth : _camera.ViewportWidth;
+        var h = ActualHeight > 0 ? ActualHeight : _camera.ViewportHeight;
+
+        var next = CameraFromMatrix(m, _nativeFactor, Math.Max(1.0, w), Math.Max(1.0, h));
+        if (next.HasValue)
+            _camera = next.Value;
+    }
+
+    /// <summary>
+    /// Base-pixel → DIP matrix for a camera. The camera is native-relative
+    /// (DIP per native pixel) while base bitmaps are decimated by <paramref name="nativeFactor"/>.
+    /// </summary>
+    internal static Matrix MatrixFromCamera(ViewTransform camera, int nativeFactor)
+    {
+        var s = camera.NativeScale;                       // DIP per native pixel
+        var factor = Math.Max(1, nativeFactor);           // native pixels per base pixel
+
+        return new Matrix(s * factor, 0, 0, s * factor,
+            camera.ViewportWidth / 2.0 - camera.CentreX * s,
+            camera.ViewportHeight / 2.0 - camera.CentreY * s);
+    }
+
+    /// <summary>Inverse of <see cref="MatrixFromCamera"/>; null when the matrix has no usable scale.</summary>
+    internal static ViewTransform? CameraFromMatrix(Matrix m, int nativeFactor,
+                                                    double viewportWidth, double viewportHeight)
+    {
+        var factor = Math.Max(1, nativeFactor);
+        var s = m.M11 / factor;
+        if (!(s > 0) || !(viewportWidth > 0) || !(viewportHeight > 0))
+            return null;
+
+        return new ViewTransform(s,
+            (viewportWidth / 2.0 - m.OffsetX) / s,
+            (viewportHeight / 2.0 - m.OffsetY) / s,
+            viewportWidth, viewportHeight);
+    }
+
+    /// <summary>The base-pixel → DIP matrix (kept private; use the camera for state).</summary>
+    private Matrix ViewMatrix => _view;
 
     // Device-pixel render target: the composited view is built at the monitor's physical
     // resolution and blitted 1:1, so WPF never resamples it.
@@ -544,9 +601,9 @@ public class PlateViewer : FrameworkElement
         
         var oriented = _orientation.OrientedSize(_width, _height);
         var scale = Math.Min(ActualWidth / oriented.Width, ActualHeight / oriented.Height) * 0.95;
-        _view = new Matrix(scale, 0, 0, scale,
+        SetCamera(new Matrix(scale, 0, 0, scale,
             (ActualWidth - oriented.Width * scale) / 2,
-            (ActualHeight - oriented.Height * scale) / 2);
+            (ActualHeight - oriented.Height * scale) / 2));
         _fitPending = false;
         NotifyViewChanged();
     }
@@ -582,8 +639,16 @@ public class PlateViewer : FrameworkElement
         var dpi = VisualTreeHelper.GetDpi(this);
         var sx = dpi.DpiScaleX <= 0 ? 1.0 : dpi.DpiScaleX;
         var sy = dpi.DpiScaleY <= 0 ? 1.0 : dpi.DpiScaleY;
-        _view.OffsetX = Math.Round(_view.OffsetX * sx) / sx;
-        _view.OffsetY = Math.Round(_view.OffsetY * sy) / sy;
+
+        var m = _view;
+        var x = Math.Round(m.OffsetX * sx) / sx;
+        var y = Math.Round(m.OffsetY * sy) / sy;
+        if (Math.Abs(x - m.OffsetX) < 1e-9 && Math.Abs(y - m.OffsetY) < 1e-9)
+            return;
+
+        m.OffsetX = x;
+        m.OffsetY = y;
+        SetCamera(m);
     }
 
     /// <summary>Set the zoom (1.0 = 100%), keeping <paramref name="anchor"/> (screen coords) fixed.</summary>
@@ -593,7 +658,9 @@ public class PlateViewer : FrameworkElement
         var a = anchor ?? new Point(ActualWidth / 2, ActualHeight / 2);
         var target = Math.Clamp(zoom, MinZoom, MaxZoom);
         var factor = target / _view.M11;
-        _view.ScaleAt(factor, factor, a.X, a.Y);
+        var m = _view;
+        m.ScaleAt(factor, factor, a.X, a.Y);
+        SetCamera(m);
         SnapToDevicePixels();
         NotifyViewChanged();
     }
@@ -606,27 +673,13 @@ public class PlateViewer : FrameworkElement
         _detailBitmap is not null && !_detailRect.IsEmpty ? Math.Max(1, _detailFactor) : 1;
 
     /// <summary>Zoom relative to native pixels: 1.0 = one plate pixel per screen pixel.</summary>
-    public double NativeZoom => Zoom / Math.Max(1, _nativeFactor);
+    public double NativeZoom => _camera.NativeScale;
 
     /// <summary>
     /// The current camera as a <see cref="ViewTransform"/> (single source of truth for the
     /// zoom readout). The centre is the plate pixel under the middle of the viewport.
     /// </summary>
-    public ViewTransform View
-    {
-        get
-        {
-            var w = Math.Max(1.0, ActualWidth);
-            var h = Math.Max(1.0, ActualHeight);
-            var zoom = Math.Max(double.Epsilon, Zoom);
-            var factor = Math.Max(1, _nativeFactor);
-
-            var centreX = (w / 2.0 - OffsetX) / zoom * factor;
-            var centreY = (h / 2.0 - OffsetY) / zoom * factor;
-
-            return new ViewTransform(NativeZoom, centreX, centreY, w, h);
-        }
-    }
+    public ViewTransform View => _camera;
 
     /// <summary>True while native pixels are being decoded for the current view.</summary>
     public bool IsRefining
@@ -947,9 +1000,9 @@ public class PlateViewer : FrameworkElement
 
         var scale = Math.Clamp(zoom ?? Zoom, MinZoom, MaxZoom);
         var oriented = _orientation.GetMatrix(_width, _height).Transform(new Point(imageX, imageY));
-        _view = new Matrix(scale, 0, 0, scale,
+        SetCamera(new Matrix(scale, 0, 0, scale,
             ActualWidth / 2 - oriented.X * scale,
-            ActualHeight / 2 - oriented.Y * scale);
+            ActualHeight / 2 - oriented.Y * scale));
         SnapToDevicePixels();
         NotifyViewChanged();
     }
@@ -1009,7 +1062,9 @@ public class PlateViewer : FrameworkElement
 
         if (dx != 0 || dy != 0)
         {
-            _view.Translate(dx, dy);
+            var m = _view;
+            m.Translate(dx, dy);
+            SetCamera(m);
             SnapToDevicePixels();
         }
     }
@@ -1041,9 +1096,15 @@ public class PlateViewer : FrameworkElement
     {
         base.OnRenderSizeChanged(sizeInfo);
         if (_fitPending)
+        {
             FitToView();
+        }
         else
+        {
+            // Keep the same pixels on screen while re-expressing the camera in the new frame.
+            SetCamera(_view);
             ViewChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
     
     // ------------------------------------------------------------------------------------------
@@ -1116,7 +1177,9 @@ public class PlateViewer : FrameworkElement
         
         if (_panning)
         {
-            _view.Translate(pos.X - _panLast.X, pos.Y - _panLast.Y);
+            var m = _view;
+            m.Translate(pos.X - _panLast.X, pos.Y - _panLast.Y);
+            SetCamera(m);
             SnapToDevicePixels();
             _panLast = pos;
             NotifyViewChanged();
