@@ -311,7 +311,10 @@ public partial class MainWindow : Window
         CompareOverlay.Visibility = on && !sideBySide ? Visibility.Visible : Visibility.Collapsed;
 
         if (on && !sideBySide)
+        {
+            DiagnosticsLog.Info($"overlay adopt pane zoom={Viewer.NativeZoom:0.####} view={Viewer.View}");
             CompareOverlay.SetNativeZoom(Viewer.NativeZoom);   // overlay opens at the pane's zoom
+        }
 
         if (sideBySide)
         {

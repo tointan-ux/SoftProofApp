@@ -59,6 +59,22 @@ Step 4 makes side-by-side sync a struct copy: `SyncCompare` calls `target.SetVie
 and `PlateViewer.SyncCamera` (pure, tested) clamps the magnification into the target's frame.
 No pane stores zoom and pan separately, so the two views cannot drift.
 
+### Live check (2400 dpi job, 11 811 px plate)
+
+| action | readout |
+|---|---|
+| open (fit) | `view 300 dpi · 1% · Overview 1/8` |
+| 1:1 | `view 2400 dpi · 100% · Native pixels` — no `Overview 1/8` flash |
+| Slide | `100% · Native pixels` (scale kept across the mode switch) |
+| wheel ×1 / ×2 | `87%` / `75.6%` |
+| middle-drag | `76%` (pan keeps the scale) |
+| Difference / Blink | `76%` |
+| 1:1 again | `100% · Native pixels`, both overlay sides decoded (log: `overlay native side 0/1: 1428x702 at 1:1`) |
+
+The run found a real defect the tests could not: the overlay capped zoom at `24 × fit`, so on a
+sheet whose fit is 1.75 % the ceiling was 42 % and `SetNativeZoom(1.0)` silently stopped there.
+The overlay now always allows 100 %, floor still 0.25 × fit.
+
 ## Migration plan (behaviour-neutral, in this order)
 
 1. **Introduce and use for readout only.** `PlateViewer` keeps its own `Zoom`/origin,

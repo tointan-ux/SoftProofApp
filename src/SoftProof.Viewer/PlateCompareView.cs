@@ -918,10 +918,14 @@ public sealed class PlateCompareView : FrameworkElement
 
     private double FitNativeScale() => FitCamera().NativeScale;
 
-    /// <summary>Zoom limits kept from the old multiplier model (0.25× … 24× of fit), never above 1:1.</summary>
+    /// <summary>
+    /// Overlay zoom range. The floor keeps the old 0.25× of fit, but 100 % must always be
+    /// reachable: capping at 24× fit left the overlay stuck well below the panes' 1:1 zoom
+    /// whenever the fitted plate was small on screen (e.g. 42 % for a 1.75 % fit).
+    /// </summary>
     private double MinNativeScale => Math.Max(ViewTransform.MinNativeScale, FitNativeScale() * MinZoom);
 
-    private double MaxNativeScale => Math.Min(ViewTransform.MaxNativeScale, FitNativeScale() * MaxZoom);
+    private double MaxNativeScale => ViewTransform.MaxNativeScale;
 
     /// <summary>Keeps the camera's viewport in step with the control, fitting on first use.</summary>
     private void EnsureCamera()
