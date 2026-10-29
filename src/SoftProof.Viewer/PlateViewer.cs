@@ -704,6 +704,39 @@ public class PlateViewer : FrameworkElement
         _detailFactor == 1 && _detailBitmap is not null && !_detailRect.IsEmpty &&
         _detailRect.Contains(VisibleImageRect);
 
+    /// <summary>
+    /// Express <paramref name="source"/> in this viewer's frame: same magnification and centre,
+    /// clamped to the zoom limits, measured against <paramref name="viewportWidth"/> ×
+    /// <paramref name="viewportHeight"/>. Pure so the sync rule can be tested without a window.
+    /// </summary>
+    internal static ViewTransform SyncCamera(ViewTransform source, int nativeFactor,
+                                             double viewportWidth, double viewportHeight)
+    {
+        var factor = Math.Max(1, nativeFactor);
+
+        // Same bounds as the wheel: the 1 % floor, and 100 % because the viewer never magnifies.
+        var scale = Math.Clamp(source.NativeScale, MinZoom / factor, ViewTransform.MaxNativeScale);
+
+        return new ViewTransform(scale, source.CentreX, source.CentreY,
+                                 Math.Max(1.0, viewportWidth), Math.Max(1.0, viewportHeight));
+    }
+
+    /// <summary>
+    /// Adopt another view: same magnification and the same plate pixel in the middle of the
+    /// viewport. This is what side-by-side sync copies — one struct, no coordinate juggling.
+    /// </summary>
+    public void SetView(ViewTransform view)
+    {
+        if (_width == 0 || ActualWidth <= 0 || ActualHeight <= 0)
+            return;
+
+        var camera = SyncCamera(view, _nativeFactor, ActualWidth, ActualHeight);
+
+        SetCamera(MatrixFromCamera(camera, _nativeFactor));
+        SnapToDevicePixels();
+        NotifyViewChanged();
+    }
+
     /// <summary>Set the zoom relative to native pixels (1.0 = 100% of the plate).</summary>
     public void SetNativeZoom(double nativeZoom, Point? anchor = null) =>
         SetZoom(nativeZoom * Math.Max(1, _nativeFactor), anchor);

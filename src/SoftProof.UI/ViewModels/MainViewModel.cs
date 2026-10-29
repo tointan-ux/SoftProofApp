@@ -199,6 +199,11 @@ public partial class MainViewModel : ObservableObject
     {
         IsDotsView = nativeZoom >= 15.0;
 
+        // At 1:1 the view IS native, even for the frames before the detail tiles land.
+        // Without this the status line briefly reads "view 300 dpi · 100% · Overview 1/8".
+        if (nativeZoom >= 0.999)
+            nativePixels = true;
+
         if (nativeZoom <= 0)
         {
             ViewScaleText = "—";

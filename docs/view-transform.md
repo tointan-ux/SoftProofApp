@@ -28,7 +28,7 @@ It is a `readonly struct` with no WPF dependency, so the geometry is unit tested
 
 ## Status
 
-**Steps 1–2 done.** `PlateViewer.View` and `PlateCompareView.View` publish a `ViewTransform`,
+**Steps 1–4 done.** `PlateViewer.View` and `PlateCompareView.View` publish a `ViewTransform`,
 and the status bar reads its percentage from `ViewTransform.ZoomText` instead of formatting
 `NativeZoom` by hand. The constructor deliberately does **not** clamp, so a view fitted below
 the 2 % floor still reports its true scale; clamping lives in `Fit`, `ZoomedAt` and
@@ -46,6 +46,18 @@ wrong and this step fixes:
   camera's stored size — otherwise the matrix still round-trips but the centre is meaningless.
 * On resize, re-express the *same* matrix in the new frame; do not recompute the centre from
   the transform, or the artwork jumps when the window changes size.
+
+Step 3 gives the single-canvas compare overlay (`Slide`/`Blink`/`Difference`) the same camera:
+`_zoom`, `_panX` and `_panY` are gone, replaced by `_camera`; `_imageRect` is
+`ImageRectFor(_camera, plateWidth, plateHeight)`, the wheel is `ZoomedAt` at the cursor, and a
+middle-drag is `PannedBy`. The zoom limits stay 0.25×–24× of fit but can never exceed 1:1, and
+`SetPlateWidth` keeps the scale while re-centring on the new plate. The old "view 300 dpi ·
+100 % · Overview 1/8" flicker is fixed at the source: the readout now treats 100 % as native
+pixels even before the detail tiles land.
+
+Step 4 makes side-by-side sync a struct copy: `SyncCompare` calls `target.SetView(source.View)`,
+and `PlateViewer.SyncCamera` (pure, tested) clamps the magnification into the target's frame.
+No pane stores zoom and pan separately, so the two views cannot drift.
 
 ## Migration plan (behaviour-neutral, in this order)
 

@@ -464,8 +464,8 @@ public partial class MainWindow : Window
         _syncingCompare = true;
         try
         {
-            var state = source.GetViewState();
-            target.SetViewCenter(state.CenterX, state.CenterY, state.Zoom);
+            // One struct carries zoom and position: no per-mode conversion can drift.
+            target.SetView(source.View);
         }
         finally
         {

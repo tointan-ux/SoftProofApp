@@ -43,7 +43,6 @@ public sealed class PlateCompareView : FrameworkElement
     private bool _showRight;
     private Rect _imageRect = Rect.Empty;
     private double _slide = 0.5;
-    private double _zoom = 1.0;
 
     /// <summary>Raised with the native zoom (1.0 = 100 %) whenever the overlay zooms.</summary>
     public event EventHandler<double>? ZoomChanged;
@@ -62,12 +61,16 @@ public sealed class PlateCompareView : FrameworkElement
     private long _blinkKeyA = long.MinValue, _blinkKeyB = long.MinValue;
     private PlateLayer? _rightLayer;
     private int _plateWidth;      // plate pixels, so 100 % means one plate pixel per DIP
-    private double _panX;
-    private double _panY;
     private bool _panning;
     private Point _panStart;
-    private double _panStartX;
-    private double _panStartY;
+    private ViewTransform _panStartCamera;
+
+    /// <summary>
+    /// The overlay camera — one <see cref="ViewTransform"/> for zoom and pan, in the same
+    /// native plate pixels the panes and the main canvas use (1.0 = 100 %).
+    /// </summary>
+    private ViewTransform _camera = new(1.0, 1.0, 1.0, 1.0, 1.0);
+    private bool _cameraReady;
     private const double MinZoom = 0.25;
     private const double MaxZoom = 24.0;
     private readonly DispatcherTimer _blinkTimer;
@@ -142,9 +145,8 @@ public sealed class PlateCompareView : FrameworkElement
     /// <summary>Back to fit-to-window, no pan.</summary>
     public void ResetView()
     {
-        _zoom = 1.0;
-        _panX = 0;
-        _panY = 0;
+        _camera = FitCamera();
+        _cameraReady = true;
         InvalidateVisual();
     }
 
@@ -154,6 +156,12 @@ public sealed class PlateCompareView : FrameworkElement
         if (platePixels > 0 && platePixels != _plateWidth)
         {
             _plateWidth = platePixels;
+
+            // Keep the current scale across a plate change; only the centre moves.
+            if (_cameraReady)
+                _camera = new ViewTransform(_camera.NativeScale, platePixels / 2.0, PlateHeight / 2.0,
+                                            _camera.ViewportWidth, _camera.ViewportHeight);
+
             InvalidateVisual();
         }
     }
@@ -345,20 +353,9 @@ public sealed class PlateCompareView : FrameworkElement
             return;
         }
 
-        if (!double.IsNaN(_pendingNativeZoom))
-        {
-            var fit = FitScale();
-            if (fit > 0 && _bw > 0 && _plateWidth > 0)
-            {
-                _zoom = Math.Clamp(_pendingNativeZoom * _plateWidth / (_bw * fit), MinZoom, MaxZoom);
-                _pendingNativeZoom = double.NaN;
-            }
-        }
+        EnsureCamera();
 
-        var scale = Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92 * _zoom;
-        var w = _bw * scale;
-        var h = _bh * scale;
-        _imageRect = new Rect((ActualWidth - w) / 2 + _panX, (ActualHeight - h) / 2 + _panY, w, h);
+        _imageRect = ImageRectFor(_camera, _plateWidth, PlateHeight);
 
         var reported = NativeZoom;
         if (Math.Abs(reported - _lastReportedNativeZoom) > 0.0005)
@@ -840,8 +837,7 @@ public sealed class PlateCompareView : FrameworkElement
         if (_panning)
         {
             var p = e.GetPosition(this);
-            _panX = _panStartX + (p.X - _panStart.X);
-            _panY = _panStartY + (p.Y - _panStart.Y);
+            _camera = _panStartCamera.PannedBy(p.X - _panStart.X, p.Y - _panStart.Y);
             InvalidateVisual();
             return;
         }
@@ -875,8 +871,7 @@ public sealed class PlateCompareView : FrameworkElement
     /// </summary>
     public Func<int, Rect, (BitmapSource Bitmap, Rect BaseRect)?>? NativeLayerProvider;
 
-    public double NativeZoom =>
-        _plateWidth > 0 && _imageRect.Width > 0 ? _imageRect.Width / _plateWidth : _zoom;
+    public double NativeZoom => _cameraReady ? _camera.NativeScale : _requestedNativeZoom;
 
     /// <summary>
     /// The overlay camera as a <see cref="ViewTransform"/>, in the same native plate pixels as
@@ -888,38 +883,94 @@ public sealed class PlateCompareView : FrameworkElement
         {
             var w = Math.Max(1.0, ActualWidth);
             var h = Math.Max(1.0, ActualHeight);
-            var rect = _imageRect;
-            var scale = NativeZoom;              // DIP per native plate pixel
 
-            if (scale <= 0 || rect.Width <= 0 || rect.Height <= 0)
-                return new ViewTransform(Math.Max(scale, ViewTransform.MinNativeScale),
-                                         _plateWidth / 2.0, _plateWidth / 2.0, w, h);
+            if (!_cameraReady)
+                return FitCamera();
 
-            var centreX = (w / 2.0 - rect.X) / scale;
-            var centreY = (h / 2.0 - rect.Y) / scale;
-
-            return new ViewTransform(scale, centreX, centreY, w, h);
+            return Math.Abs(_camera.ViewportWidth - w) > 0.5 || Math.Abs(_camera.ViewportHeight - h) > 0.5
+                ? _camera.Resized(w, h)
+                : _camera;
         }
     }
 
-    private double FitScale() =>
-        _bw <= 0 || _bh <= 0 ? 0 : Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92;
+    /// <summary>
+    /// Where the plate lands on screen for a camera. Pure, so the overlay geometry that the
+    /// render path depends on (100 % = one plate pixel per DIP) can be tested without a window.
+    /// </summary>
+    internal static Rect ImageRectFor(ViewTransform camera, double plateWidth, double plateHeight)
+    {
+        var scale = camera.NativeScale;
+
+        return new Rect(camera.ViewportWidth / 2.0 - camera.CentreX * scale,
+                        camera.ViewportHeight / 2.0 - camera.CentreY * scale,
+                        Math.Max(1.0, plateWidth) * scale,
+                        Math.Max(1.0, plateHeight) * scale);
+    }
+
+    /// <summary>Native height of the plate, derived from the decoded bitmap's aspect.</summary>
+    private double PlateHeight =>
+        _bw > 0 && _bh > 0 ? Math.Max(1, _plateWidth) * (_bh / (double)_bw) : Math.Max(1, _plateWidth);
+
+    /// <summary>Fit the whole plate in the viewport with the same 92 % fill the panes use.</summary>
+    private ViewTransform FitCamera() =>
+        ViewTransform.Fit(Math.Max(1, _plateWidth), PlateHeight,
+                          Math.Max(1.0, ActualWidth), Math.Max(1.0, ActualHeight), 0.92);
+
+    private double FitNativeScale() => FitCamera().NativeScale;
+
+    /// <summary>Zoom limits kept from the old multiplier model (0.25× … 24× of fit), never above 1:1.</summary>
+    private double MinNativeScale => Math.Max(ViewTransform.MinNativeScale, FitNativeScale() * MinZoom);
+
+    private double MaxNativeScale => Math.Min(ViewTransform.MaxNativeScale, FitNativeScale() * MaxZoom);
+
+    /// <summary>Keeps the camera's viewport in step with the control, fitting on first use.</summary>
+    private void EnsureCamera()
+    {
+        var w = Math.Max(1.0, ActualWidth);
+        var h = Math.Max(1.0, ActualHeight);
+
+        if (!_cameraReady)
+        {
+            _camera = FitCamera();
+            _cameraReady = true;
+
+            if (!double.IsNaN(_pendingNativeZoom))
+            {
+                ApplyNativeZoom(_pendingNativeZoom);
+                _pendingNativeZoom = double.NaN;
+            }
+
+            return;
+        }
+
+        if (Math.Abs(_camera.ViewportWidth - w) > 0.5 || Math.Abs(_camera.ViewportHeight - h) > 0.5)
+            _camera = _camera.Resized(w, h);
+    }
+
+    /// <summary>Set the scale (clamped) and centre on the plate — the old SetNativeZoom semantics.</summary>
+    private void ApplyNativeZoom(double nativeZoom)
+    {
+        var scale = Math.Clamp(nativeZoom, MinNativeScale, MaxNativeScale);
+        _camera = new ViewTransform(scale,
+                                    Math.Max(1, _plateWidth) / 2.0,
+                                    PlateHeight / 2.0,
+                                    _camera.ViewportWidth, _camera.ViewportHeight);
+    }
 
     /// <summary>Zoom so the overlay matches the main canvas at <paramref name="nativeZoom"/>.</summary>
     public void SetNativeZoom(double nativeZoom)
     {
         _requestedNativeZoom = nativeZoom;
-        var fit = FitScale();
-        if (fit <= 0 || _bw <= 0 || _plateWidth <= 0)
+
+        if (!_cameraReady || _bw <= 0 || _bh <= 0 || _plateWidth <= 0)
         {
             _pendingNativeZoom = nativeZoom;
             return;
         }
 
-        _zoom = Math.Clamp(nativeZoom * _plateWidth / (_bw * fit), MinZoom, MaxZoom);
+        EnsureCamera();
+        ApplyNativeZoom(nativeZoom);
         _pendingNativeZoom = double.NaN;
-        _panX = 0;
-        _panY = 0;
         InvalidateVisual();
     }
 
@@ -929,19 +980,17 @@ public sealed class PlateCompareView : FrameworkElement
         if (_bw <= 0 || _bh <= 0)
             return;
 
+        EnsureCamera();
+
         var pos = e.GetPosition(this);
         var factor = e.Delta > 0 ? 1.15 : 1 / 1.15;
-        var next = Math.Clamp(_zoom * factor, MinZoom, MaxZoom);
-        if (Math.Abs(next - _zoom) < 1e-6)
+        var current = _camera.NativeScale;
+        var next = Math.Clamp(current * factor, MinNativeScale, MaxNativeScale);
+        if (Math.Abs(next - current) < current * 1e-6)
             return;
 
-        // Keep the image point under the cursor stationary while zooming.
-        var cx = (pos.X - ActualWidth / 2 - _panX) / _zoom;
-        var cy = (pos.Y - ActualHeight / 2 - _panY) / _zoom;
-
-        _zoom = next;
-        _panX = pos.X - ActualWidth / 2 - cx * _zoom;
-        _panY = pos.Y - ActualHeight / 2 - cy * _zoom;
+        // Keep the plate pixel under the cursor stationary while zooming.
+        _camera = _camera.ZoomedAt(next / current, pos.X, pos.Y);
 
         ZoomChanged?.Invoke(this, NativeZoom);
         InvalidateVisual();
@@ -956,9 +1005,9 @@ public sealed class PlateCompareView : FrameworkElement
 
         CaptureMouse();
         _panning = true;
+        EnsureCamera();
         _panStart = e.GetPosition(this);
-        _panStartX = _panX;
-        _panStartY = _panY;
+        _panStartCamera = _camera;
         Cursor = Cursors.SizeAll;
         e.Handled = true;
     }

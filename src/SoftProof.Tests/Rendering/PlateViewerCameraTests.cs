@@ -138,6 +138,42 @@ public class PlateViewerCameraTests
         rebuilt.OffsetY.Should().BeApproximately(original.OffsetY, 1e-9);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(8)]
+    public void Sync_copies_zoom_and_centre_into_the_target_frame(int nativeFactor)
+    {
+        var source = Camera(0.42, 5_500, 3_100);
+
+        var synced = PlateViewer.SyncCamera(source, nativeFactor, 1_280, 720);
+
+        synced.NativeScale.Should().BeApproximately(0.42, 1e-12);
+        synced.CentreX.Should().BeApproximately(5_500, 1e-9);
+        synced.CentreY.Should().BeApproximately(3_100, 1e-9);
+        synced.ViewportWidth.Should().Be(1_280);
+        synced.ViewportHeight.Should().Be(720);
+    }
+
+    [Fact]
+    public void Sync_never_asks_for_more_than_one_to_one()
+    {
+        // A stale source cannot drag the target past the 100 % rule.
+        PlateViewer.SyncCamera(Camera(4.0, 10, 10), 8, 1_600, 1_000)
+            .NativeScale.Should().Be(ViewTransform.MaxNativeScale);
+    }
+
+    [Fact]
+    public void Sync_of_a_fitted_view_reproduces_the_fit()
+    {
+        var view = ViewTransform.Fit(11_811, 8_268, ViewportWidth, ViewportHeight);
+
+        var synced = PlateViewer.SyncCamera(view, 8, ViewportWidth, ViewportHeight);
+
+        synced.NativeScale.Should().BeApproximately(view.NativeScale, 1e-12);
+        synced.CentreX.Should().BeApproximately(view.CentreX, 1e-9);
+        synced.CentreY.Should().BeApproximately(view.CentreY, 1e-9);
+    }
+
     [Fact]
     public void A_matrix_without_scale_is_rejected_instead_of_producing_infinity()
     {
