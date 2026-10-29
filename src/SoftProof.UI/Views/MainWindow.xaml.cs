@@ -693,20 +693,31 @@ public partial class MainWindow : Window
         return state;
     }
 
-    private string _overlayNativeKey = string.Empty;
-    private (BitmapSource Bitmap, Rect BaseRect)? _overlayNativeValue;
+    private sealed class OverlayNativeSlot
+    {
+        public string Key = string.Empty;
+        public bool Pending;
+        public (BitmapSource Bitmap, Rect BaseRect)? Value;
+    }
+
+    // One slot per side: Slide requests A and B every frame, so a single slot would
+    // evict itself and re-decode both sides on every redraw.
+    private readonly OverlayNativeSlot[] _overlayNative = { new(), new() };
 
     /// <summary>
-    /// Native-resolution pixels for a single-canvas compare side, decoded on demand for
-    /// the visible region only. Falls back to null so the overlay uses its coverage path.
+    /// Native pixels for a single-canvas compare side. Never blocks: it returns the cached
+    /// frame when available, otherwise schedules one decode and lets the overlay keep
+    /// drawing its coverage frame until <see cref="PlateCompareView.InvalidateFrame"/> fires.
     /// </summary>
     private (BitmapSource Bitmap, Rect BaseRect)? ProvideOverlayNativeLayer(int side, Rect visibleBase)
     {
+        if (side is < 0 or > 1 || visibleBase.Width < 1 || visibleBase.Height < 1)
+            return null;
+
+        var slot = _overlayNative[side];
+
         try
         {
-            if (visibleBase.Width < 1 || visibleBase.Height < 1)
-                return null;
-
             var plate = side == 0
                 ? _viewModel.CompareLeft?.Layer
                 : (_viewModel.CompareRightIsExternal
@@ -734,23 +745,56 @@ public partial class MainWindow : Window
                 return null;
 
             var key = plate.GetHashCode() + "|" + nx0 + "|" + ny0 + "|" + ow + "|" + oh;
-            if (key == _overlayNativeKey && _overlayNativeValue is { } cached)
-                return cached;
 
-            var bitmap = Task.Run(() => RenderDetailTileAsync(
-                    new[] { (plate, source) }, nx0, ny0, ow, oh, 1, CancellationToken.None))
-                .GetAwaiter().GetResult();
+            if (slot.Key == key)
+                return slot.Value;
+
+            if (slot.Pending)
+                return null;          // a decode for an older rect is still running
+
+            slot.Key = key;
+            slot.Pending = true;
+            slot.Value = null;
 
             var baseRect = new Rect(nx0 / (double)factor, ny0 / (double)factor,
                                     ow / (double)factor, oh / (double)factor);
-            var value = (bitmap, baseRect);
-            _overlayNativeKey = key;
-            _overlayNativeValue = value;
-            return value;
+
+            _ = Task.Run(async () =>
+            {
+                (BitmapSource Bitmap, Rect BaseRect)? decoded = null;
+
+                try
+                {
+                    var bitmap = await RenderDetailTileAsync(
+                        new[] { (plate, source) }, nx0, ny0, ow, oh, 1, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    decoded = (bitmap, baseRect);
+                }
+                catch (Exception ex)
+                {
+                    DiagnosticsLog.Info($"overlay native layer failed: {ex.Message}");
+                }
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    slot.Pending = false;
+
+                    if (slot.Key != key)
+                        return;               // the view moved on; this frame is stale
+
+                    slot.Value = decoded;
+
+                    if (decoded is not null)
+                        CompareOverlay.InvalidateFrame();
+                });
+            });
+
+            return null;                      // coverage frame shows until the decode lands
         }
         catch (Exception ex)
         {
-            DiagnosticsLog.Info($"overlay native layer failed: {ex.Message}");
+            slot.Pending = false;
+            DiagnosticsLog.Info($"overlay native request failed: {ex.Message}");
             return null;
         }
     }

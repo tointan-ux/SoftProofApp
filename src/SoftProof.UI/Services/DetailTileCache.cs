@@ -13,6 +13,7 @@ public sealed class DetailTileCache
 
     private sealed record Entry(long Key, BitmapSource Bitmap, int Bytes);
 
+    private readonly object _gate = new();
     private readonly long _budgetBytes;
     private readonly Dictionary<long, LinkedListNode<Entry>> _map = new();
     private readonly LinkedList<Entry> _lru = new();
@@ -28,12 +29,16 @@ public sealed class DetailTileCache
 
     public bool TryGet(int source, int level, int x, int y, out BitmapSource bitmap)
     {
-        if (_map.TryGetValue(Key(source, level, x, y), out var node))
+        // Decoding runs on worker threads while the UI thread clears the cache.
+        lock (_gate)
         {
-            _lru.Remove(node);
-            _lru.AddFirst(node);
-            bitmap = node.Value.Bitmap;
-            return true;
+            if (_map.TryGetValue(Key(source, level, x, y), out var node))
+            {
+                _lru.Remove(node);
+                _lru.AddFirst(node);
+                bitmap = node.Value.Bitmap;
+                return true;
+            }
         }
 
         bitmap = null!;
@@ -46,6 +51,14 @@ public sealed class DetailTileCache
         if (bytes > _budgetBytes)
             return;
 
+        lock (_gate)
+        {
+            PutLocked(source, level, x, y, bitmap, bytes);
+        }
+    }
+
+    private void PutLocked(int source, int level, int x, int y, BitmapSource bitmap, int bytes)
+    {
         var key = Key(source, level, x, y);
         if (_map.Remove(key, out var old))
         {
@@ -67,8 +80,11 @@ public sealed class DetailTileCache
 
     public void Clear()
     {
-        _map.Clear();
-        _lru.Clear();
-        _bytes = 0;
+        lock (_gate)
+        {
+            _map.Clear();
+            _lru.Clear();
+            _bytes = 0;
+        }
     }
 }

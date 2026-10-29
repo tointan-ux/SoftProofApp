@@ -665,6 +665,13 @@ public sealed class PlateCompareView : FrameworkElement
         return hash.ToHashCode();
     }
 
+    /// <summary>Drops the cached frame, e.g. when native pixels for the region arrive.</summary>
+    public void InvalidateFrame()
+    {
+        _cacheKey = long.MinValue;
+        InvalidateVisual();
+    }
+
     /// <summary>Shows the cached frame when nothing pixel-relevant changed.</summary>
     private bool TryBlitCached(long key, DrawingContext dc)
     {
