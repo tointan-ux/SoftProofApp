@@ -103,6 +103,41 @@ public class PlateViewerCameraTests
         viaMatrix.CentreY.Should().BeApproximately(viaCamera.CentreY, 1e-6);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(8)]
+    public void Adopting_a_matrix_reproduces_it_exactly(int nativeFactor)
+    {
+        // This is the step-2 "no visual change" guarantee: the render matrix is stored as a
+        // camera and rebuilt, so a fit/zoom/pan matrix must survive the round trip untouched.
+        var original = new Matrix(0.3125, 0, 0, 0.3125, 123.5, 77.25);
+
+        var camera = PlateViewer.CameraFromMatrix(original, nativeFactor, ViewportWidth, ViewportHeight)!.Value;
+        var rebuilt = PlateViewer.MatrixFromCamera(camera, nativeFactor);
+
+        rebuilt.M11.Should().BeApproximately(original.M11, 1e-12);
+        rebuilt.M22.Should().BeApproximately(original.M22, 1e-12);
+        rebuilt.OffsetX.Should().BeApproximately(original.OffsetX, 1e-9);
+        rebuilt.OffsetY.Should().BeApproximately(original.OffsetY, 1e-9);
+    }
+
+    [Fact]
+    public void Re_expressing_a_matrix_in_a_larger_viewport_keeps_the_pixels_still()
+    {
+        // A window resize must not move the artwork: same matrix, new frame.
+        var original = new Matrix(0.75, 0, 0, 0.75, -40.25, 310.5);
+
+        var before = PlateViewer.CameraFromMatrix(original, 4, ViewportWidth, ViewportHeight)!.Value;
+        var after = PlateViewer.CameraFromMatrix(original, 4, 1_920, 1_080)!.Value;
+
+        after.NativeScale.Should().Be(before.NativeScale);
+
+        var rebuilt = PlateViewer.MatrixFromCamera(after, 4);
+        rebuilt.OffsetX.Should().BeApproximately(original.OffsetX, 1e-9);
+        rebuilt.OffsetY.Should().BeApproximately(original.OffsetY, 1e-9);
+    }
+
     [Fact]
     public void A_matrix_without_scale_is_rejected_instead_of_producing_infinity()
     {

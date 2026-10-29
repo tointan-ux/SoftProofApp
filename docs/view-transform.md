@@ -28,12 +28,24 @@ It is a `readonly struct` with no WPF dependency, so the geometry is unit tested
 
 ## Status
 
-**Step 1 done.** `PlateViewer.View` and `PlateCompareView.View` publish a `ViewTransform`,
+**Steps 1–2 done.** `PlateViewer.View` and `PlateCompareView.View` publish a `ViewTransform`,
 and the status bar reads its percentage from `ViewTransform.ZoomText` instead of formatting
 `NativeZoom` by hand. The constructor deliberately does **not** clamp, so a view fitted below
 the 2 % floor still reports its true scale; clamping lives in `Fit`, `ZoomedAt` and
 `WithNativeScale`. Verified on a 2400 dpi job: 1 % overview, 100 % native, 50 % after one
 wheel notch — byte-identical strings to the previous build.
+
+Step 2 makes `PlateViewer` *store* the camera: `_camera` is a `ViewTransform` in native plate
+pixels and the base-pixel `Matrix` is derived from it (`MatrixFromCamera`), adopted after each
+mutation (`SetCamera` ← `CameraFromMatrix`). The conversion is exact, which is asserted by
+round-trip tests rather than by screenshots: a matrix survives camera → matrix untouched, and
+re-expressing it in a resized viewport leaves the offsets identical. Two rules the draft got
+wrong and this step fixes:
+
+* `SetCamera` must measure against the **live viewport** (`ActualWidth/Height`), not the
+  camera's stored size — otherwise the matrix still round-trips but the centre is meaningless.
+* On resize, re-express the *same* matrix in the new frame; do not recompute the centre from
+  the transform, or the artwork jumps when the window changes size.
 
 ## Migration plan (behaviour-neutral, in this order)
 
