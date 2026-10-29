@@ -94,3 +94,26 @@ The overlay now always allows 100 %, floor still 0.25 × fit.
 
 Steps 1–2 can ship independently of the overlay work; each step keeps the full test
 suite green (176 tests as of this branch).
+
+### Blank white canvas at 1:1 in Slide (fixed)
+
+Symptom: `Slide` at 1:1 showed a white page with a split handle.
+
+Two causes, both in the overlay:
+
+1. **The 100 % reference was the base raster.** `SetPlates` stored `left.Width` — the decimated
+   coverage width — while the camera counted DIPs per native pixel. On an 8× pyramid plate the
+   overlay therefore showed 1:1 as 800 %, i.e. a ~2 × 1 mm hole in the sheet. Fixed by keeping
+   `_basePlateWidth` + `_nativeFactor` and deriving `PlateWidthNative = base × factor`
+   (`PlateCompareView.NativeWidth`, unit-tested).
+2. **The camera sat on paper.** The overlay adopted the pane's zoom only, and re-centred on the
+   plate middle when zooming. A press sheet is mostly margin, so 1:1 landed on blank stock.
+   The overlay now (a) adopts the pane's whole `ViewTransform`, (b) keeps the current centre
+   while zooming, and (c) centres on the ink centroid — not the bounding box, which corner
+   registration marks stretch over the whole sheet — and falls back to it if the resulting
+   centre has no ink. `PlateViewer.CentreOnContent` does the same for the panes.
+
+Instrumentation used to find it: a temporary trace of `camera / native / base / factor /
+imageRect / content` on every overlay render (removed again), which showed
+`native=74648 base=9331 f=8` — the 8× discrepancy — and a centre of `(73873, 40752)` on a
+sheet whose ink centroid is `(45442, 48062)`.

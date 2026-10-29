@@ -311,10 +311,7 @@ public partial class MainWindow : Window
         CompareOverlay.Visibility = on && !sideBySide ? Visibility.Visible : Visibility.Collapsed;
 
         if (on && !sideBySide)
-        {
-            DiagnosticsLog.Info($"overlay adopt pane zoom={Viewer.NativeZoom:0.####} view={Viewer.View}");
-            CompareOverlay.SetNativeZoom(Viewer.NativeZoom);   // overlay opens at the pane's zoom
-        }
+            CompareOverlay.SetView(Viewer.View);   // overlay opens where the pane is looking
 
         if (sideBySide)
         {
@@ -325,7 +322,7 @@ public partial class MainWindow : Window
             // Opening compare must not land on the plate's white margin: centre both panes
             // on the artwork, then share that state.
             if (_viewModel.HasRaster)
-                Viewer.CentreOnPlate();
+                Viewer.CentreOnContent();
 
             var paneState = Viewer.GetViewState();
             CompareViewer.SetViewCenter(paneState.CenterX, paneState.CenterY, paneState.Zoom);
@@ -384,7 +381,7 @@ public partial class MainWindow : Window
         // SetPlates resets the overlay's zoom, so the pane zoom is applied last, using the
         // same plate width the main canvas uses for 100 %.
         CompareOverlay.SetPlateWidth(Viewer.PlateWidthPixels);
-        CompareOverlay.SetNativeZoom(Viewer.NativeZoom);
+        CompareOverlay.SetView(Viewer.View);
     }
 
     /// <summary>Load a rasterised reference (PDF via Ghostscript, or an image) and diff the plate.</summary>

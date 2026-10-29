@@ -28,6 +28,17 @@ public class CompareViewGeometryTests
         rect.Height.Should().BeApproximately(PlateHeight, 1e-9);
     }
 
+    [Theory]
+    [InlineData(9331, 8, 74648)]
+    [InlineData(1477, 1, 1477)]
+    [InlineData(2000, 4, 8000)]
+    public void The_hundred_percent_reference_is_the_native_width(int baseWidth, int factor, int expected)
+    {
+        // The overlay's coverage arrays are base-raster; using that width as the 100 % reference
+        // put 1:1 at 8x on an 8x pyramid and left the viewport on a blank margin.
+        PlateCompareView.NativeWidth(baseWidth, factor).Should().Be(expected);
+    }
+
     [Fact]
     public void A_centred_camera_puts_the_plate_in_the_middle_of_the_viewport()
     {

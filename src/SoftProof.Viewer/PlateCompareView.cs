@@ -44,6 +44,17 @@ public sealed class PlateCompareView : FrameworkElement
     private Rect _imageRect = Rect.Empty;
     private double _slide = 0.5;
 
+    /// <summary>
+    /// Plate width in <b>native</b> pixels — the reference for 100 %. The coverage arrays and
+    /// the decoded bitmaps are base-raster, so mixing the two spaces put "100 %" at 800 % on an
+    /// 8x-pyramid plate and left the viewport on a blank margin.
+    /// </summary>
+    private int PlateWidthNative => NativeWidth(_basePlateWidth, _nativeFactor);
+
+    /// <summary>Base-raster width → native width. Pure, because getting this wrong put "100 %" at 800 %.</summary>
+    internal static int NativeWidth(int baseWidth, int nativeFactor) =>
+        Math.Max(1, baseWidth) * Math.Max(1, nativeFactor);
+
     /// <summary>Raised with the native zoom (1.0 = 100 %) whenever the overlay zooms.</summary>
     public event EventHandler<double>? ZoomChanged;
 
@@ -60,7 +71,11 @@ public sealed class PlateCompareView : FrameworkElement
     private WriteableBitmap? _blinkA, _blinkB;
     private long _blinkKeyA = long.MinValue, _blinkKeyB = long.MinValue;
     private PlateLayer? _rightLayer;
-    private int _plateWidth;      // plate pixels, so 100 % means one plate pixel per DIP
+    private int _basePlateWidth;  // base-raster pixels (what the coverage arrays hold)
+    private int _nativeFactor = 1; // native pixels per base pixel
+    private double _contentX = double.NaN;   // ink centre, native px (NaN = use the plate centre)
+    private double _contentY = double.NaN;
+    private Rect _content = Rect.Empty;      // ink bounds, native px
     private bool _panning;
     private Point _panStart;
     private ViewTransform _panStartCamera;
@@ -153,9 +168,9 @@ public sealed class PlateCompareView : FrameworkElement
     /// <summary>Reference width used for 100 % so the overlay matches the main canvas exactly.</summary>
     public void SetPlateWidth(int platePixels)
     {
-        if (platePixels > 0 && platePixels != _plateWidth)
+        if (platePixels > 0 && platePixels != _basePlateWidth)
         {
-            _plateWidth = platePixels;
+            _basePlateWidth = platePixels;
 
             // Keep the current scale across a plate change; only the centre moves.
             if (_cameraReady)
@@ -183,7 +198,14 @@ public sealed class PlateCompareView : FrameworkElement
         _bh = _left?.PixelHeight ?? _right?.PixelHeight ?? 0;
 
         // Plate pixels drive the 100 % reference, so the overlay matches the main canvas.
-        _plateWidth = left?.Width ?? right?.Width ?? _bw;
+        // The coverage arrays are the base raster: keep it, and remember the decimation so the
+        // camera can work in native pixels like the panes do.
+        _nativeFactor = Math.Max(1, left?.Pyramid?.Base.Factor ?? right?.Pyramid?.Base.Factor ?? 1);
+        _basePlateWidth = left?.Width ?? right?.Width ?? _bw;
+        var stats = FindContentStats(_leftLayer ?? _rightLayer, _nativeFactor);
+        _content = stats.Bounds;
+        _contentX = stats.CentreX;
+        _contentY = stats.CentreY;
         _platesVersion++;
         _cacheKey = long.MinValue;
         _blinkA = _blinkB = null;
@@ -355,7 +377,7 @@ public sealed class PlateCompareView : FrameworkElement
 
         EnsureCamera();
 
-        _imageRect = ImageRectFor(_camera, _plateWidth, PlateHeight);
+        _imageRect = ImageRectFor(_camera, PlateWidthNative, PlateHeight);
 
         var reported = NativeZoom;
         if (Math.Abs(reported - _lastReportedNativeZoom) > 0.0005)
@@ -837,7 +859,7 @@ public sealed class PlateCompareView : FrameworkElement
         if (_panning)
         {
             var p = e.GetPosition(this);
-            _camera = _panStartCamera.PannedBy(p.X - _panStart.X, p.Y - _panStart.Y);
+            _camera = ClampToContent(_panStartCamera.PannedBy(p.X - _panStart.X, p.Y - _panStart.Y));
             InvalidateVisual();
             return;
         }
@@ -909,12 +931,130 @@ public sealed class PlateCompareView : FrameworkElement
 
     /// <summary>Native height of the plate, derived from the decoded bitmap's aspect.</summary>
     private double PlateHeight =>
-        _bw > 0 && _bh > 0 ? Math.Max(1, _plateWidth) * (_bh / (double)_bw) : Math.Max(1, _plateWidth);
+        _bw > 0 && _bh > 0 ? PlateWidthNative * (_bh / (double)_bw) : PlateWidthNative;
+
+    /// <summary>
+    /// Centre of the inked area in native pixels. A step-and-repeat sheet is mostly paper, so
+    /// fitting or zooming on the plate centre lands on a blank margin — and the canvas reads as
+    /// a white screen even though it is drawing correctly.
+    /// </summary>
+    /// <summary>
+    /// Ink bounds and ink <b>centroid</b> in native pixels. The bounding box centre is useless on
+    /// a press sheet: corner registration marks stretch the box over the whole sheet, so its
+    /// middle is bare paper. The centroid sits where the ink actually is.
+    /// </summary>
+    private static (Rect Bounds, double CentreX, double CentreY) FindContentStats(PlateLayer? layer, int nativeFactor)
+    {
+        if (layer is not { } plate || plate.Coverage.Length == 0)
+            return (Rect.Empty, double.NaN, double.NaN);
+
+        var w = plate.Width;
+        var h = plate.Height;
+        var cov = plate.Coverage;
+        const int stride = 4;
+
+        int minX = int.MaxValue, minY = int.MaxValue, maxX = -1, maxY = -1;
+        double sum = 0, sumX = 0, sumY = 0;
+
+        for (var y = 0; y < h; y += stride)
+        {
+            var row = y * w;
+            for (var x = 0; x < w; x += stride)
+            {
+                var v = cov[row + x];
+                if (v <= 8)
+                    continue;
+
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+
+                sum += v;
+                sumX += (double)x * v;
+                sumY += (double)y * v;
+            }
+        }
+
+        if (maxX < 0 || sum <= 0)
+            return (Rect.Empty, double.NaN, double.NaN);
+
+        var f = (double)Math.Max(1, nativeFactor);
+        var bounds = new Rect(minX * f, minY * f, (maxX - minX + 1) * f, (maxY - minY + 1) * f);
+
+        return (bounds, sumX / sum * f, sumY / sum * f);
+    }
+
+    /// <summary>
+    /// Keeps the viewport on the ink. A press sheet is mostly paper: without this, a pane that
+    /// was panned into a margin hands its centre to the overlay and 1:1 lands on blank white.
+    /// </summary>
+    private ViewTransform ClampToContent(ViewTransform view)
+    {
+        if (_content.IsEmpty || _content.Width <= 0 || _content.Height <= 0)
+            return view;
+
+        var clamped = new ViewTransform(view.NativeScale,
+                                        Math.Clamp(view.CentreX, _content.X, _content.Right),
+                                        Math.Clamp(view.CentreY, _content.Y, _content.Bottom),
+                                        view.ViewportWidth, view.ViewportHeight);
+
+        // Still on bare paper at this position? Show the artwork instead of a white screen.
+        return IsBlank(clamped.CentreX, clamped.CentreY) && !double.IsNaN(_contentX)
+            ? clamped.CentredOn(_contentX, _contentY)
+            : clamped;
+    }
+
+    /// <summary>True when the plate has no ink at a native-pixel position.</summary>
+    private bool IsBlank(double nativeX, double nativeY)
+    {
+        var layer = _leftLayer ?? _rightLayer;
+        if (layer is not { } plate || plate.Coverage.Length == 0)
+            return false;
+
+        var f = Math.Max(1, _nativeFactor);
+        var x = (int)Math.Round(nativeX / f);
+        var y = (int)Math.Round(nativeY / f);
+
+        if (x < 0 || y < 0 || x >= plate.Width || y >= plate.Height)
+            return true;
+
+        // Look at a small neighbourhood so a single blank pixel between dots does not count.
+        var r = 4;
+        for (var dy = -r; dy <= r; dy += 2)
+        {
+            var yy = y + dy;
+            if (yy < 0 || yy >= plate.Height) continue;
+
+            for (var dx = -r; dx <= r; dx += 2)
+            {
+                var xx = x + dx;
+                if (xx < 0 || xx >= plate.Width) continue;
+
+                if (plate.Coverage[yy * plate.Width + xx] > 8)
+                    return false;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>Fit the whole plate in the viewport with the same 92 % fill the panes use.</summary>
     private ViewTransform FitCamera() =>
-        ViewTransform.Fit(Math.Max(1, _plateWidth), PlateHeight,
+        ViewTransform.Fit(PlateWidthNative, PlateHeight,
                           Math.Max(1.0, ActualWidth), Math.Max(1.0, ActualHeight), 0.92);
+
+    /// <summary>Adopt a view from another surface: same magnification and plate pixel.</summary>
+    public void SetView(ViewTransform view)
+    {
+        EnsureCamera();
+
+        var scale = Math.Clamp(view.NativeScale, MinNativeScale, MaxNativeScale);
+        _camera = ClampToContent(new ViewTransform(scale, view.CentreX, view.CentreY,
+                                    Math.Max(1.0, ActualWidth), Math.Max(1.0, ActualHeight)));
+        _pendingNativeZoom = double.NaN;
+        InvalidateVisual();
+    }
 
     private double FitNativeScale() => FitCamera().NativeScale;
 
@@ -936,6 +1076,10 @@ public sealed class PlateCompareView : FrameworkElement
         if (!_cameraReady)
         {
             _camera = FitCamera();
+
+            if (!double.IsNaN(_contentX))
+                _camera = _camera.CentredOn(_contentX, _contentY);
+
             _cameraReady = true;
 
             if (!double.IsNaN(_pendingNativeZoom))
@@ -955,10 +1099,11 @@ public sealed class PlateCompareView : FrameworkElement
     private void ApplyNativeZoom(double nativeZoom)
     {
         var scale = Math.Clamp(nativeZoom, MinNativeScale, MaxNativeScale);
-        _camera = new ViewTransform(scale,
-                                    Math.Max(1, _plateWidth) / 2.0,
-                                    PlateHeight / 2.0,
-                                    _camera.ViewportWidth, _camera.ViewportHeight);
+
+        // Zoom about the current centre: recentring on the plate would throw away the artwork
+        // the user is looking at and can land on a blank margin.
+        _camera = ClampToContent(new ViewTransform(scale, _camera.CentreX, _camera.CentreY,
+                                    _camera.ViewportWidth, _camera.ViewportHeight));
     }
 
     /// <summary>Zoom so the overlay matches the main canvas at <paramref name="nativeZoom"/>.</summary>
@@ -966,7 +1111,7 @@ public sealed class PlateCompareView : FrameworkElement
     {
         _requestedNativeZoom = nativeZoom;
 
-        if (!_cameraReady || _bw <= 0 || _bh <= 0 || _plateWidth <= 0)
+        if (!_cameraReady || _bw <= 0 || _bh <= 0)
         {
             _pendingNativeZoom = nativeZoom;
             return;
@@ -994,7 +1139,7 @@ public sealed class PlateCompareView : FrameworkElement
             return;
 
         // Keep the plate pixel under the cursor stationary while zooming.
-        _camera = _camera.ZoomedAt(next / current, pos.X, pos.Y);
+        _camera = ClampToContent(_camera.ZoomedAt(next / current, pos.X, pos.Y));
 
         ZoomChanged?.Invoke(this, NativeZoom);
         InvalidateVisual();

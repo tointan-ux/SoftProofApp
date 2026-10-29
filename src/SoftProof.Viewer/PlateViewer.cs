@@ -1043,6 +1043,23 @@ public class PlateViewer : FrameworkElement
     /// <summary>Plate width in image pixels — the reference for "100 %" in compare overlays.</summary>
     public int PlateWidthPixels => _width;
 
+    /// <summary>
+    /// Centre on the inked area when its bounds are known, falling back to the plate centre.
+    /// A press sheet is mostly paper, so centring on the sheet lands on a blank margin.
+    /// </summary>
+    public void CentreOnContent()
+    {
+        var b = _contentBounds;
+
+        if (b.IsEmpty || b.Width <= 0 || b.Height <= 0)
+        {
+            CentreOnPlate();
+            return;
+        }
+
+        SetViewCenter(b.X + b.Width / 2, b.Y + b.Height / 2);
+    }
+
     /// <summary>Centre the viewport on the plate centre (used when a compare pane opens).</summary>
     public void CentreOnPlate()
     {
