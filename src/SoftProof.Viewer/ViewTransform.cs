@@ -6,9 +6,10 @@ namespace SoftProof.Viewer;
 /// Immutable view transform for a plate viewport, expressed in <b>native plate pixels</b>.
 /// <para>
 /// One unit of <see cref="CentreX"/>/<see cref="CentreY"/> is one pixel of the plate at its
-/// native resolution (2400 dpi for a 2400 dpi job), and <see cref="NativeScale"/> is native
-/// pixels per device-independent pixel. 100 % zoom is therefore <c>NativeScale == 1.0</c>
-/// regardless of the plate's base pyramid level, the viewer, or the compare mode.
+/// native resolution (2400 dpi for a 2400 dpi job), and <see cref="NativeScale"/> is the
+/// magnification: <b>DIPs per native pixel</b>. 100 % zoom is therefore
+/// <c>NativeScale == 1.0</c> — exactly the existing <c>PlateViewer.NativeZoom</c> — regardless
+/// of the plate's base pyramid level, the viewer, or the compare mode.
 /// </para>
 /// <para>
 /// The viewer, the side-by-side panes and the single-canvas compare overlay are meant to share
@@ -33,14 +34,16 @@ public readonly struct ViewTransform : IEquatable<ViewTransform>
         if (viewportWidth <= 0) throw new ArgumentOutOfRangeException(nameof(viewportWidth));
         if (viewportHeight <= 0) throw new ArgumentOutOfRangeException(nameof(viewportHeight));
 
-        NativeScale = ClampScale(nativeScale);
+        // Deliberately not clamped: this type also describes the current view for readout,
+        // and rounding that display to the zoom limits would misreport the real scale.
+        NativeScale = double.IsNaN(nativeScale) ? MinNativeScale : nativeScale;
         CentreX = centreX;
         CentreY = centreY;
         ViewportWidth = viewportWidth;
         ViewportHeight = viewportHeight;
     }
 
-    /// <summary>Native plate pixels per DIP (1.0 = 100 %).</summary>
+    /// <summary>DIPs per native plate pixel (1.0 = 100 %).</summary>
     public double NativeScale { get; }
 
     /// <summary>Centre of the viewport in native plate pixels.</summary>
@@ -54,6 +57,9 @@ public readonly struct ViewTransform : IEquatable<ViewTransform>
 
     /// <summary>Zoom percentage as the UI shows it.</summary>
     public double Percent => NativeScale * 100.0;
+
+    /// <summary>The zoom readout every view shares, e.g. <c>100%</c>.</summary>
+    public string ZoomText => $"{Percent:0}%";
 
     public static double ClampScale(double scale) =>
         double.IsNaN(scale) ? MinNativeScale : Math.Clamp(scale, MinNativeScale, MaxNativeScale);
@@ -111,9 +117,9 @@ public readonly struct ViewTransform : IEquatable<ViewTransform>
     public ViewTransform Resized(double viewportWidth, double viewportHeight) =>
         new(NativeScale, CentreX, CentreY, viewportWidth, viewportHeight);
 
-    /// <summary>Same centre, new zoom (clamped).</summary>
+    /// <summary>Same centre, new zoom (clamped to the zoom limits).</summary>
     public ViewTransform WithNativeScale(double nativeScale) =>
-        new(nativeScale, CentreX, CentreY, ViewportWidth, ViewportHeight);
+        new(ClampScale(nativeScale), CentreX, CentreY, ViewportWidth, ViewportHeight);
 
     /// <summary>Region of the plate currently visible, in native plate pixels.</summary>
     public (double X, double Y, double Width, double Height) VisiblePlateRect(double plateWidth, double plateHeight)

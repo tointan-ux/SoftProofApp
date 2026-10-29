@@ -878,6 +878,30 @@ public sealed class PlateCompareView : FrameworkElement
     public double NativeZoom =>
         _plateWidth > 0 && _imageRect.Width > 0 ? _imageRect.Width / _plateWidth : _zoom;
 
+    /// <summary>
+    /// The overlay camera as a <see cref="ViewTransform"/>, in the same native plate pixels as
+    /// the side-by-side panes, so the readout can come from one type in every mode.
+    /// </summary>
+    public ViewTransform View
+    {
+        get
+        {
+            var w = Math.Max(1.0, ActualWidth);
+            var h = Math.Max(1.0, ActualHeight);
+            var rect = _imageRect;
+            var scale = NativeZoom;              // DIP per native plate pixel
+
+            if (scale <= 0 || rect.Width <= 0 || rect.Height <= 0)
+                return new ViewTransform(Math.Max(scale, ViewTransform.MinNativeScale),
+                                         _plateWidth / 2.0, _plateWidth / 2.0, w, h);
+
+            var centreX = (w / 2.0 - rect.X) / scale;
+            var centreY = (h / 2.0 - rect.Y) / scale;
+
+            return new ViewTransform(scale, centreX, centreY, w, h);
+        }
+    }
+
     private double FitScale() =>
         _bw <= 0 || _bh <= 0 ? 0 : Math.Min(ActualWidth / _bw, ActualHeight / _bh) * 0.92;
 

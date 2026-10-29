@@ -106,7 +106,7 @@ public partial class MainWindow : Window
         _viewModel.ViewCommandRequested += OnViewCommand;
         _viewModel.CompareModeChanged += (_, _) => RefreshCompare();
         // The overlay modes have their own zoom; keep the readout showing the real scale.
-        CompareOverlay.ZoomChanged += (_, nativeZoom) => _viewModel.UpdateOverlayZoom(nativeZoom);
+        CompareOverlay.ZoomChanged += (_, nativeZoom) => _viewModel.UpdateOverlayZoom(nativeZoom, CompareOverlay.View);
 
         CompareOverlay.NativeLayerProvider = ProvideOverlayNativeLayer;
         CompareOverlay.DifferenceThreshold = _viewModel.DifferenceThreshold;
@@ -540,7 +540,7 @@ public partial class MainWindow : Window
     private void OnViewChanged()
     {
         SyncCompare(Viewer, CompareViewer);
-        _viewModel.UpdateViewState(Viewer.NativeZoom);
+        _viewModel.UpdateViewState(Viewer.NativeZoom, Viewer.View);
         var detailFactor = Viewer.ActiveDetailFactor;
         if (Viewer.ShowsNativePixels || detailFactor > 1)
             _viewModel.UpdateViewScale(Viewer.NativeZoom, detailFactor, 0, detailFactor == 1);
@@ -785,7 +785,10 @@ public partial class MainWindow : Window
                     slot.Value = decoded;
 
                     if (decoded is not null)
+                    {
+                        DiagnosticsLog.Info($"overlay native side {side}: {ow}x{oh} at 1:1");
                         CompareOverlay.InvalidateFrame();
+                    }
                 });
             });
 

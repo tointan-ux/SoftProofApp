@@ -217,9 +217,10 @@ public partial class MainViewModel : ObservableObject
                 ? $"Overview 1/{levelFactor}"
                 : string.Empty;
 
+        var percentText = View?.ZoomText ?? $"{percent:0}%";
         var scale = overview.Length > 0
-            ? $"{percent:0}% · {overview}"
-            : $"{percent:0}%";
+            ? $"{percentText} · {overview}"
+            : percentText;
 
         ViewScaleText = plateDpi > 0
             ? $"{plateDpi:0} dpi plate · view {viewDpi:0} dpi · {scale}"
@@ -227,15 +228,16 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Overlay compare modes report their own zoom; keep the readout truthful.</summary>
-    public void UpdateOverlayZoom(double nativeZoom)
+    public void UpdateOverlayZoom(double nativeZoom, ViewTransform? view = null)
     {
+        View = view;
         ZoomLevel = nativeZoom;
 
         var plateDpi = CurrentJob?.Metadata.Resolution ?? 0;
-        var percent = nativeZoom * 100;
+        var percentText = view?.ZoomText ?? $"{nativeZoom * 100:0}%";
         ViewScaleText = plateDpi > 0
-            ? $"{plateDpi:0} dpi plate · view {plateDpi:0} dpi · {percent:0}%"
-            : $"{percent:0}%";
+            ? $"{plateDpi:0} dpi plate · view {plateDpi:0} dpi · {percentText}"
+            : percentText;
     }
 
     [ObservableProperty]

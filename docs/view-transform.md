@@ -19,12 +19,21 @@ left pane not driving the right, the readout showing the pane while the overlay 
 
 `SoftProof.Viewer.ViewTransform` (this branch) is the single source of truth:
 
-* `NativeScale` — native plate pixels per DIP. **1.0 = 100 %, always.**
+* `NativeScale` — DIPs per native plate pixel (the magnification). **1.0 = 100 %, always.**
 * `CentreX/CentreY` — viewport centre in native plate pixels.
 * `ViewportWidth/Height` — DIP size of the surface.
 
 It is a `readonly struct` with no WPF dependency, so the geometry is unit tested
 (15 tests in this branch) instead of being verified by eye through the UI.
+
+## Status
+
+**Step 1 done.** `PlateViewer.View` and `PlateCompareView.View` publish a `ViewTransform`,
+and the status bar reads its percentage from `ViewTransform.ZoomText` instead of formatting
+`NativeZoom` by hand. The constructor deliberately does **not** clamp, so a view fitted below
+the 2 % floor still reports its true scale; clamping lives in `Fit`, `ZoomedAt` and
+`WithNativeScale`. Verified on a 2400 dpi job: 1 % overview, 100 % native, 50 % after one
+wheel notch — byte-identical strings to the previous build.
 
 ## Migration plan (behaviour-neutral, in this order)
 

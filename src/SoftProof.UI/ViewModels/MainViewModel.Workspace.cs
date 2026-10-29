@@ -42,8 +42,29 @@ public partial class MainViewModel
     [ObservableProperty]
     private bool _hasRaster;
     
-    public string ZoomText => $"{ZoomLevel * 100:0}%";
-    
+    private ViewTransform? _view;
+
+    /// <summary>
+    /// Camera behind the zoom readout. Set by whichever surface is driving the view
+    /// (main canvas or the single-canvas compare overlay); null only before the first
+    /// view change, when the readout falls back to <see cref="ZoomLevel"/>.
+    /// </summary>
+    public ViewTransform? View
+    {
+        get => _view;
+        private set
+        {
+            if (Nullable.Equals(_view, value))
+                return;
+
+            _view = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ZoomText));
+        }
+    }
+
+    public string ZoomText => View?.ZoomText ?? $"{ZoomLevel * 100:0}%";
+
     partial void OnZoomLevelChanged(double value) => OnPropertyChanged(nameof(ZoomText));
     
     // ---- cursor, densitometer, caliper --------------------------------------------------------
@@ -306,7 +327,11 @@ public partial class MainViewModel
     
     /// <summary>Called by the view when the viewer's zoom changed. Zoom is native-relative:
     /// 1.0 = one plate pixel per screen pixel, regardless of the preview decimation.</summary>
-    public void UpdateViewState(double nativeZoom) => ZoomLevel = nativeZoom;
+    public void UpdateViewState(double nativeZoom, ViewTransform? view = null)
+    {
+        View = view;
+        ZoomLevel = nativeZoom;
+    }
     
     // ---- side-by-side compare ----------------------------------------------------------------
 

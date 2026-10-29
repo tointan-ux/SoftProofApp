@@ -608,6 +608,26 @@ public class PlateViewer : FrameworkElement
     /// <summary>Zoom relative to native pixels: 1.0 = one plate pixel per screen pixel.</summary>
     public double NativeZoom => Zoom / Math.Max(1, _nativeFactor);
 
+    /// <summary>
+    /// The current camera as a <see cref="ViewTransform"/> (single source of truth for the
+    /// zoom readout). The centre is the plate pixel under the middle of the viewport.
+    /// </summary>
+    public ViewTransform View
+    {
+        get
+        {
+            var w = Math.Max(1.0, ActualWidth);
+            var h = Math.Max(1.0, ActualHeight);
+            var zoom = Math.Max(double.Epsilon, Zoom);
+            var factor = Math.Max(1, _nativeFactor);
+
+            var centreX = (w / 2.0 - OffsetX) / zoom * factor;
+            var centreY = (h / 2.0 - OffsetY) / zoom * factor;
+
+            return new ViewTransform(NativeZoom, centreX, centreY, w, h);
+        }
+    }
+
     /// <summary>True while native pixels are being decoded for the current view.</summary>
     public bool IsRefining
     {

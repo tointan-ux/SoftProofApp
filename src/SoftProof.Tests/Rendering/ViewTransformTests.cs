@@ -171,4 +171,27 @@ public class ViewTransformTests
         new ViewTransform(1.0, 0, 0, 100, 100).Percent.Should().Be(100);
         new ViewTransform(0.25, 0, 0, 100, 100).Percent.Should().Be(25);
     }
+
+    [Theory]
+    [InlineData(0.02)]
+    [InlineData(0.05)]
+    [InlineData(0.245)]
+    [InlineData(0.875)]
+    [InlineData(0.9994)]
+    [InlineData(1.0)]
+    public void Zoom_text_is_identical_to_the_legacy_readout(double nativeZoom)
+    {
+        // The step-1 migration must not change a single character of the status bar.
+        var legacy = $"{nativeZoom * 100:0}%";
+
+        new ViewTransform(nativeZoom, 0, 0, 100, 100).ZoomText.Should().Be(legacy);
+    }
+
+    [Fact]
+    public void The_constructor_reports_the_scale_it_was_given()
+    {
+        // Readout fidelity: a fit below the zoom floor must still display what it is.
+        new ViewTransform(0.008, 0, 0, 1600, 1000).Percent.Should().BeApproximately(0.8, 1e-9);
+        new ViewTransform(2.5, 0, 0, 1600, 1000).Percent.Should().BeApproximately(250, 1e-9);
+    }
 }
