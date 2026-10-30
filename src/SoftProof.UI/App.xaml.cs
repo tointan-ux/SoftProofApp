@@ -53,6 +53,11 @@ public partial class App : Application
 
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             mainWindow.Show();
+
+            // A file argument makes the app scriptable (and testable) without the Open dialog.
+            var startFile = e.Args.FirstOrDefault(a => !a.StartsWith("-") && File.Exists(a));
+            if (startFile is not null)
+                _ = mainWindow.OpenJobFileAsync(startFile);
         }
         catch (Exception ex)
         {

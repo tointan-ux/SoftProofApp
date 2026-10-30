@@ -113,6 +113,17 @@ Two causes, both in the overlay:
    registration marks stretch over the whole sheet — and falls back to it if the resulting
    centre has no ink. `PlateViewer.CentreOnContent` does the same for the panes.
 
+**Real root cause (third pass): three rasters, one coordinate system.** The plate exists at
+three sizes — the preview composite (`_bw`, ~1 077 px), the base coverage (9 331 px) and native
+(74 648 px at factor 8). `VisibleBaseRect()` — the rect handed to `NativeLayerProvider` — was
+computed with the *preview* width, so the provider decoded a region 8× too small and 8×
+mis-placed (179 × 89 px instead of 1 551 × 762), and `DrawNativeBitmap` then stretched that
+stamp across the whole viewport. Result: a magnified white blob over a correct coverage frame.
+Both are now expressed in true base-raster pixels (`VisibleBaseRect` derives from the camera
+and divides by `_nativeFactor`; `DrawNativeBitmap` maps with `_basePlateWidth`), and
+`PlateCompareViewRenderTests` renders the control offscreen to prove it: at 1:1 the canvas is
+>90 % ink and the provider is asked for `viewport / factor`.
+
 Instrumentation used to find it: a temporary trace of `camera / native / base / factor /
 imageRect / content` on every overlay render (removed again), which showed
 `native=74648 base=9331 f=8` — the 8× discrepancy — and a centre of `(73873, 40752)` on a

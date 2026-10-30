@@ -456,6 +456,9 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Mirror one viewer's centre and zoom onto the other, without feedback loops.</summary>
+    /// <summary>Opens a job supplied on the command line.</summary>
+    public Task OpenJobFileAsync(string path) => _viewModel.LoadJobAsync(path);
+
     private void SyncCompare(PlateViewer source, PlateViewer target)
     {
         if (_syncingCompare || !_viewModel.IsCompareMode || !_viewModel.CompareSyncLocked)

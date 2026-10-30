@@ -499,14 +499,22 @@ public sealed class PlateCompareView : FrameworkElement
     /// <summary>Viewport in base-image pixels, clamped to the plate.</summary>
     private Rect VisibleBaseRect()
     {
-        if (_bw <= 0 || _bh <= 0 || _imageRect.Width <= 0)
+        if (_basePlateWidth <= 0 || _imageRect.Width <= 0)
             return Rect.Empty;
 
-        var x0 = Math.Max(0, (0 - _imageRect.X) / _imageRect.Width * _bw);
-        var y0 = Math.Max(0, (0 - _imageRect.Y) / _imageRect.Height * _bh);
-        var x1 = Math.Min(_bw, (ActualWidth - _imageRect.X) / _imageRect.Width * _bw);
-        var y1 = Math.Min(_bh, (ActualHeight - _imageRect.Y) / _imageRect.Height * _bh);
-        return new Rect(x0, y0, Math.Max(0, x1 - x0), Math.Max(0, y1 - y0));
+        var scale = _camera.NativeScale;               // DIP per native pixel
+        if (scale <= 0)
+            return Rect.Empty;
+
+        var factor = Math.Max(1, _nativeFactor);
+        var x0 = Math.Max(0, (0 - _imageRect.X) / scale);
+        var y0 = Math.Max(0, (0 - _imageRect.Y) / scale);
+        var x1 = Math.Min(PlateWidthNative, (ActualWidth - _imageRect.X) / scale);
+        var y1 = Math.Min(PlateHeight, (ActualHeight - _imageRect.Y) / scale);
+
+        // Native → base raster: the provider decodes native tiles but talks in base coordinates.
+        return new Rect(x0 / factor, y0 / factor,
+                        Math.Max(0, x1 - x0) / factor, Math.Max(0, y1 - y0) / factor);
     }
 
     /// <summary>Draw a bitmap that covers <paramref name="baseRect"/> of the image, at device resolution.</summary>
@@ -518,10 +526,13 @@ public sealed class PlateCompareView : FrameworkElement
         var pw = EnsureDevice(out var ph, clear);
         var dpi = VisualTreeHelper.GetDpi(this);
 
-        var destX = _imageRect.X + baseRect.X / _bw * _imageRect.Width;
-        var destY = _imageRect.Y + baseRect.Y / _bh * _imageRect.Height;
-        var destW = baseRect.Width / _bw * _imageRect.Width;
-        var destH = baseRect.Height / _bh * _imageRect.Height;
+        var baseW = Math.Max(1, _basePlateWidth);
+        var baseH = Math.Max(1.0, PlateHeight / Math.Max(1, _nativeFactor));
+
+        var destX = _imageRect.X + baseRect.X / baseW * _imageRect.Width;
+        var destY = _imageRect.Y + baseRect.Y / baseH * _imageRect.Height;
+        var destW = baseRect.Width / baseW * _imageRect.Width;
+        var destH = baseRect.Height / baseH * _imageRect.Height;
 
         if (destW <= 0 || destH <= 0)
             return;
