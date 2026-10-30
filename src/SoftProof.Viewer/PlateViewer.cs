@@ -3,6 +3,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
 
 namespace SoftProof.Viewer;
@@ -85,6 +86,10 @@ public class PlateViewer : FrameworkElement
     private int _levelIndex;
     private int _renderWidth;
     private int _renderHeight;
+
+    // ICC soft proof: an RGB render of the same plates, produced by the colour engine.
+    private BitmapSource? _proofedBitmap;
+    private Func<BitmapData, CancellationToken, Task<BitmapData>>? _proofProvider;
     private int _renderStep = 1;        // base pixels per level pixel
     private int _renderLevelWidth;      // level bitmap width (sampling stride)
     private int _renderLevelHeight;
@@ -352,6 +357,80 @@ public class PlateViewer : FrameworkElement
     /// <summary>Width in pixels of the level being drawn (base width at level 0).</summary>
     public int RenderWidth => _renderWidth;
 
+    /// <summary>True while a proofed render is what the viewer draws.</summary>
+    public bool ProofEnabled => _proofedBitmap is not null;
+
+    /// <summary>Why the last proof attempt produced nothing, for the caller to report.</summary>
+    public string? ProofFailure { get; private set; }
+
+    /// <summary>
+    /// Renders the visible plates through <paramref name="proof"/> (normally the ICC proof
+    /// transform) and shows that instead of the screen composite. Returns false when there is
+    /// nothing to proof or the provider could not produce an image.
+    /// </summary>
+    public async Task<bool> EnableProofAsync(
+        Func<BitmapData, CancellationToken, Task<BitmapData>> proof,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(proof);
+
+        _proofProvider = proof;
+
+        return await RenderProofAsync(cancellationToken).ConfigureAwait(true);
+    }
+
+    /// <summary>Drops the proofed render and goes back to the screen composite.</summary>
+    public void DisableProof()
+    {
+        _proofProvider = null;
+        _proofedBitmap = null;
+        InvalidateVisual();
+    }
+
+    private async Task<bool> RenderProofAsync(CancellationToken cancellationToken)
+    {
+        if (_proofProvider is null || _renderWidth <= 0 || _renderHeight <= 0)
+            return false;
+
+        var layers = GetActiveLayers();
+        if (layers.Count == 0)
+            return false;
+
+        var count = layers.Count;
+        var coverage = new byte[count][];
+        var colours = new SeparationColor[count];
+        var inverted = new bool[count];
+        var opacity = new double[count];
+
+        for (var i = 0; i < count; i++)
+        {
+            coverage[i] = LevelOf(layers[i], _levelIndex)?.Coverage ?? layers[i].Coverage;
+            colours[i] = layers[i].Separation.Color;
+            inverted[i] = layers[i].Inverted;
+            opacity[i] = layers[i].Opacity;
+        }
+
+        // A spot-only job has no CMYK channels: the transform would produce bare paper, which
+        // looks like a rendering bug. Say so instead of drawing a blank plate.
+        if (ProofComposer.ProcessChannelCount(colours) == 0)
+        {
+            ProofFailure = "soft proof needs process CMYK plates; this job only has spot inks";
+            System.Diagnostics.Debug.WriteLine(ProofFailure);
+            return false;
+        }
+
+        var cmyk = ProofComposer.BuildCmyk(coverage, colours, inverted, opacity,
+                                           _renderWidth, _renderHeight);
+
+        var proofed = await _proofProvider(cmyk, cancellationToken).ConfigureAwait(true);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        _proofedBitmap = ProofComposer.ToBgra(proofed);
+        ProofFailure = null;
+        InvalidateVisual();
+        return true;
+    }
+
     private int MaxLevelIndex
     {
         get
@@ -464,7 +543,25 @@ public class PlateViewer : FrameworkElement
 
         _detailDebounce.Stop();
         _requestedDetailRegion = Rect.Empty;
+
+        // Plate state changed, so a visible proof is stale. Re-render it in the background rather
+        // than dropping back to the screen composite without saying so.
+        if (_proofedBitmap is not null && _proofProvider is not null)
+            _ = RefreshProofAsync();
+
         MaybeRequestDetail();
+    }
+
+    private async Task RefreshProofAsync()
+    {
+        try
+        {
+            await RenderProofAsync(CancellationToken.None).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Soft proof refresh failed: {ex.Message}");
+        }
     }
     
     private List<PlateLayer> GetActiveLayers()
@@ -1340,8 +1437,12 @@ public class PlateViewer : FrameworkElement
         
         // Transparent fill so the whole area receives mouse input.
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        
-        if (_bitmap == null) return;
+
+        // The proofed render replaces the screen composite pixel for pixel; it covers the same
+        // level, so the same rect and matrix apply.
+        var source = _proofedBitmap ?? _bitmap;
+
+        if (source == null) return;
         
         var drawMatrix = _orientation.GetMatrix(_width, _height);
         drawMatrix.Append(_view);
@@ -1350,13 +1451,13 @@ public class PlateViewer : FrameworkElement
         // magnified bitmap path is cheaper and equally soft either way.
         if (NativeZoom >= 0.5 && ActualWidth > 0 && ActualHeight > 0)
         {
-            RenderDeviceResolution(dc, drawMatrix);
+            RenderDeviceResolution(dc, drawMatrix, source);
         }
         else
         {
             dc.PushTransform(new MatrixTransform(drawMatrix));
-            dc.DrawImage(_bitmap, _renderRect);
-            if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+            dc.DrawImage(source, _renderRect);
+            if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive && !ProofEnabled)
                 dc.DrawImage(_detailBitmap, _detailRect);
             dc.Pop();
             RenderBackSide(dc);
@@ -1368,7 +1469,7 @@ public class PlateViewer : FrameworkElement
         DrawOverlaysAndChrome(dc);
     }
 
-    private void RenderDeviceResolution(DrawingContext dc, Matrix drawMatrix)
+    private void RenderDeviceResolution(DrawingContext dc, Matrix drawMatrix, BitmapSource source)
     {
         var dpi = VisualTreeHelper.GetDpi(this);
         var pw = Math.Max(1, (int)Math.Round(ActualWidth * dpi.DpiScaleX));
@@ -1383,10 +1484,9 @@ public class PlateViewer : FrameworkElement
         }
 
         Array.Clear(_devicePixels!, 0, _devicePixels!.Length);
-        if (_bitmap is not null)
-            ViewportResampler.Draw(_bitmap, _renderRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
+        ViewportResampler.Draw(source, _renderRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
 
-        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive && !ProofEnabled)
             ViewportResampler.Draw(_detailBitmap, _detailRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
 
         _deviceBitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _devicePixels!, pw * 4, 0);

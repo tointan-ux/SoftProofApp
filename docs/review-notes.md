@@ -239,3 +239,39 @@ along with invalid ones, trailing dots/spaces trimmed, length capped at 80, rese
 prefixed with `_`, and all-replacement names (`"///"` → `"___"`) fall back to `job`.
 `MainViewModel.SanitizeFileName` delegates to it. Covered by 15 cases in
 `FileNameSanitizationTests`.
+
+
+---
+
+## Soft proofing is now reachable (review items 1-3)
+
+The ICC pipeline existed but nothing could invoke it: `SeparationViewer` was registered in DI,
+never placed in a window, and it fed a CMYK->CMYK simulation transform into a BGRA bitmap. It has
+been deleted. Proofing now lives where the plates are:
+
+- **`ProofComposer`** (Viewer) packs the visible plates into 8-bit CMYK at the preview level —
+  process inks into C/M/Y/K, inversion and opacity applied, two plates on one ink taking the max.
+  Spot, varnish and white inks are skipped: lcms would need a device link, and pretending a spot is
+  CMYK proofs the wrong ink. A job with no process plates is refused with a reason instead of
+  drawing bare paper.
+- **`PlateViewer.EnableProofAsync`** runs that buffer through a caller-supplied transform and draws
+  the RGB result instead of the screen composite (`ProofEnabled`, `DisableProof`). The normal
+  preview composite stays untouched underneath, so turning the proof off is instant.
+- **View > Soft proof (ICC)** builds the transform from the job's profiles and toggles it.
+  `ProofProfileLocator` resolves the paths: job settings win, a missing configured profile is an
+  error rather than a silent substitution, and the defaults are sRGB + SWOP from the Windows
+  colour directory.
+
+Verified live: on the CMYK demo job the canvas renders a proofed page (control strips, blue
+gradient, barcode) with status `Soft proof: USWebCoatedSWOP.icc to sRGB Color Space Profile.icm`;
+on the spot-only plate job it refuses with `Soft proof unavailable: soft proof needs process CMYK
+plates; this job only has spot inks.` `SoftProofTests` pins the channel packing, the RGB->BGRA
+conversion, the profile locator and that an enabled proof is what OnRender draws.
+
+Also from the review:
+
+- `ApplyTransformAsync` runs on the thread pool (`Task.Run`) instead of pretending to be async
+  while blocking the caller; `CreateTransformAsync` no longer claims to be async either.
+- `ApplyProofTransformAsync` only allocates the TVI and ink-limit buffers when those stages exist.
+- `PlateLayer.ComputeStats` multiplies in `long`, and the detail-tile cache keys on a stable
+  `PlateLayer.Id` instead of `GetHashCode` (identity hashes collide).

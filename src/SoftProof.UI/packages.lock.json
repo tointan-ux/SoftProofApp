@@ -418,7 +418,7 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
-          "SoftProof.Core": "[0.1.0-preview, )",
+          "SoftProof.Core": "[1.0.0, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
       },
@@ -434,7 +434,7 @@
         "dependencies": {
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
           "SixLabors.ImageSharp": "[3.1.12, )",
-          "SoftProof.Core": "[0.1.0-preview, )",
+          "SoftProof.Core": "[1.0.0, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
       },
@@ -443,9 +443,9 @@
         "dependencies": {
           "MathNet.Numerics": "[5.0.0, )",
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
-          "SoftProof.ColorManagement": "[0.1.0-preview, )",
-          "SoftProof.Core": "[0.1.0-preview, )",
-          "SoftProof.Viewer": "[0.1.0-preview, )",
+          "SoftProof.ColorManagement": "[1.0.0, )",
+          "SoftProof.Core": "[1.0.0, )",
+          "SoftProof.Viewer": "[1.0.0, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
       },
@@ -453,12 +453,29 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
-          "SoftProof.ColorManagement": "[0.1.0-preview, )",
-          "SoftProof.Core": "[0.1.0-preview, )",
-          "SoftProof.RIPParsers": "[0.1.0-preview, )",
+          "SoftProof.ColorManagement": "[1.0.0, )",
+          "SoftProof.Core": "[1.0.0, )",
+          "SoftProof.RIPParsers": "[1.0.0, )",
           "System.Drawing.Common": "[8.0.5, )",
           "WriteableBitmapEx": "[1.6.8, )"
         }
+      }
+    },
+    "net8.0-windows7.0/win-x64": {
+      "Microsoft.Win32.SystemEvents": {
+        "type": "Transitive",
+        "resolved": "8.0.0",
+        "contentHash": "9opKRyOKMCi2xJ7Bj7kxtZ1r9vbzosMvRrdEhVhDz8j8MoBGgB+WmC94yH839NPH+BclAjtQ/pyagvi/8gDLkw=="
+      },
+      "System.Diagnostics.EventLog": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "qd01+AqPhbAG14KtdtIqFk+cxHQFZ/oqRSCoxU1F+Q6Kv0cl726sl7RzU9yLFGd4BUOKdN4XojXF0pQf/R6YeA=="
+      },
+      "System.Text.Encodings.Web": {
+        "type": "Transitive",
+        "resolved": "9.0.0",
+        "contentHash": "e2hMgAErLbKyUUwt18qSBf9T5Y+SFAL3ZedM8fLupkVj8Rj2PZ9oxQ37XX2LF8fTO1wNIxvKpihD7Of7D/NxZw=="
       }
     }
   }

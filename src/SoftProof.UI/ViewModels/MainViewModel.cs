@@ -27,6 +27,9 @@ public partial class MainViewModel : ObservableObject
     private readonly RipParserRegistry _parserRegistry;
     private readonly IFileDialogService _fileDialogs;
     private readonly IColorEngine _colorEngine;
+
+    /// <summary>The colour engine, for callers that need to run a transform (soft proof).</summary>
+    internal IColorEngine ColorEngine => _colorEngine;
     private readonly InverseDotGainTool _idgTool;
     private readonly DensitometerTool _densitometer;
     private readonly ColorMeasurementTool _colorMeasurement;

@@ -139,7 +139,6 @@ public partial class App : Application
                     services.AddSingleton<ColorMeasurementTool>();
                 
                     // Viewer
-                    services.AddSingleton<SeparationViewer>();
                 
                     // ViewModels
                     services.AddSingleton<MainViewModel>();

@@ -245,7 +245,7 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         return profile;
     }
     
-    public async Task<ColorTransform> CreateTransformAsync(
+    public Task<ColorTransform> CreateTransformAsync(
         IccProfile sourceProfile,
         IccProfile destProfile,
         RenderingIntent intent,
@@ -274,14 +274,14 @@ public class LittleCmsEngine : IColorEngine, IDisposable
                 $"Failed to create colour transform {sourceProfile.ColorSpace} -> {destProfile.ColorSpace}" +
                 (LcmsNative.LastError is { } error ? $" ({error})" : string.Empty));
         
-        return new ColorTransform
+        return Task.FromResult(new ColorTransform
         {
             Handle = transformHandle,
             SourceProfile = sourceProfile,
             DestProfile = destProfile,
             Intent = intent,
             BlackPointCompensation = blackPointCompensation
-        };
+        });
     }
     
     public Task<ProofTransform> CreateProofTransformAsync(
@@ -410,42 +410,61 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         }
     }
 
-    public async Task<BitmapData> ApplyTransformAsync(
+    /// <summary>
+    /// Runs a transform over the whole buffer. The work is CPU-bound and can take seconds on a
+    /// 250 Mpx plate, so it always runs on the thread pool — a caller that awaits this from the UI
+    /// thread would otherwise freeze the window for the duration.
+    /// </summary>
+    public Task<BitmapData> ApplyTransformAsync(
         ColorTransform transform,
         BitmapData source,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(transform);
+        ArgumentNullException.ThrowIfNull(source);
+
         cancellationToken.ThrowIfCancellationRequested();
-        
-        var dest = new BitmapData
+
+        return Task.Run(() =>
         {
-            Width = source.Width,
-            Height = source.Height,
-            Format = GetOutputFormat(transform.DestProfile.ColorSpace),
-            Stride = CalculateStride(source.Width, GetOutputFormat(transform.DestProfile.ColorSpace))
-        };
-        
-        dest.Pixels = new byte[dest.Stride * dest.Height];
-        
-        var sourceHandle = GCHandle.Alloc(source.Pixels, GCHandleType.Pinned);
-        var destHandle = GCHandle.Alloc(dest.Pixels, GCHandleType.Pinned);
-        
-        try
-        {
-            var pixelCount = (UIntPtr)(uint)(source.Width * source.Height);
-            LcmsNative.cmsDoTransform(
-                transform.Handle,
-                sourceHandle.AddrOfPinnedObject(),
-                destHandle.AddrOfPinnedObject(),
-                pixelCount);
-        }
-        finally
-        {
-            if (sourceHandle.IsAllocated) sourceHandle.Free();
-            if (destHandle.IsAllocated) destHandle.Free();
-        }
-        
-        return dest;
+            var format = GetOutputFormat(transform.DestProfile.ColorSpace);
+            var stride = CalculateStride(source.Width, format);
+
+            var pixelCount = (long)source.Width * source.Height;
+
+            if (pixelCount <= 0)
+                throw new ArgumentException("Bitmap has no pixels.", nameof(source));
+
+            var dest = new BitmapData
+            {
+                Width = source.Width,
+                Height = source.Height,
+                Format = format,
+                Stride = stride,
+                Pixels = new byte[checked(stride * (long)source.Height)]
+            };
+
+            var sourceHandle = GCHandle.Alloc(source.Pixels, GCHandleType.Pinned);
+            var destHandle = GCHandle.Alloc(dest.Pixels, GCHandleType.Pinned);
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                LcmsNative.cmsDoTransform(
+                    transform.Handle,
+                    sourceHandle.AddrOfPinnedObject(),
+                    destHandle.AddrOfPinnedObject(),
+                    (UIntPtr)(ulong)pixelCount);
+            }
+            finally
+            {
+                if (sourceHandle.IsAllocated) sourceHandle.Free();
+                if (destHandle.IsAllocated) destHandle.Free();
+            }
+
+            return dest;
+        }, cancellationToken);
     }
     
     /// <summary>
@@ -458,14 +477,26 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         
-        // Step 1: Apply TVI curves to source data
-        var tviOutput = new byte[source.Pixels.Length];
-        proofTransform.TVIStage?.ApplyTVI(source.Pixels, tviOutput, source.Width * source.Height);
-        
-        // Step 2: Apply ink limit
-        var inkLimitedData = new byte[tviOutput.Length];
-        Buffer.BlockCopy(tviOutput, 0, inkLimitedData, 0, tviOutput.Length);
-        proofTransform.InkLimitStage?.EnforceLimit(inkLimitedData, source.Width * source.Height);
+        var pixelCount = source.Width * source.Height;
+
+        // Each stage is optional; allocating a full-size copy for a stage that does not exist
+        // costs gigabytes on a large plate and produces nothing.
+        var working = source.Pixels;
+
+        if (proofTransform.TVIStage is { } tvi)
+        {
+            var afterTvi = new byte[source.Pixels.Length];
+            tvi.ApplyTVI(source.Pixels, afterTvi, pixelCount);
+            working = afterTvi;
+        }
+
+        if (proofTransform.InkLimitStage is { } inkLimit)
+        {
+            if (ReferenceEquals(working, source.Pixels))
+                working = (byte[])source.Pixels.Clone();
+
+            inkLimit.EnforceLimit(working, pixelCount);
+        }
         
         // Step 3: one pass through the proofing transform when it exists — it already carries the
         // simulation profile and the proofing intent, so chaining the two legs would proof twice.
@@ -477,7 +508,7 @@ public class LittleCmsEngine : IColorEngine, IDisposable
                 Height = source.Height,
                 Format = PixelFormat.CMYK32,
                 Stride = CalculateStride(source.Width, PixelFormat.CMYK32),
-                Pixels = inkLimitedData
+                Pixels = working
             };
 
             return await ApplyTransformAsync(composite, proofInput, cancellationToken).ConfigureAwait(false);
@@ -490,7 +521,7 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             Height = source.Height,
             Format = PixelFormat.CMYK32,
             Stride = CalculateStride(source.Width, PixelFormat.CMYK32),
-            Pixels = inkLimitedData
+            Pixels = working
         };
         
         var simOutput = await ApplyTransformAsync(proofTransform.SimulationTransform ?? throw new InvalidOperationException("Simulation transform not available"), simInput, cancellationToken);

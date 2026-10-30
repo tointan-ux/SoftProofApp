@@ -60,6 +60,11 @@ public sealed class PlateLayer
         B = b;
     }
     
+    private static int _nextId;
+
+    /// <summary>Stable identity for caches and cull keys. GetHashCode is not unique.</summary>
+    public int Id { get; } = System.Threading.Interlocked.Increment(ref _nextId);
+
     public bool Visible { get; set; } = true;
     public bool Solo { get; set; }
     public bool Inverted { get; set; }
@@ -124,7 +129,7 @@ public sealed class PlateLayer
                 }
             });
 
-        InkedAreaPercent = total * 100.0 / (255.0 * Width * Height);
+        InkedAreaPercent = total * 100.0 / (255.0 * (long)Width * Height);
         InkedPixelPercent = inkedPixels * 100.0 / ((long)Width * Height);
         InkBounds = maxX < 0 ? PixelBounds.Empty : new PixelBounds(minX, minY, maxX - minX + 1, maxY - minY + 1);
     }

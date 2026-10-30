@@ -82,6 +82,9 @@
                         <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}" InputGestureText="Ctrl+-" />
                         <Separator />
                         <MenuItem Header="Side-by-side _Compare" Command="{Binding ToggleCompareCommand}" />
+                        <Separator />
+                        <MenuItem Header="Soft proof (ICC)" Click="ToggleSoftProof_Click"
+                                  ToolTip="Renders the plates through the press profile instead of the screen approximation." />
                     </MenuItem>
                     <MenuItem Header="S_eparations">
                         <MenuItem Header="_All On" Command="{Binding ShowAllPlatesCommand}" />

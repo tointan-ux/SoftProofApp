@@ -9,7 +9,9 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using SoftProof.Core.Analysis;
+using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
+using SoftProof.Core.Utilities;
 using SoftProof.Core.Services;
 using SoftProof.RIPParsers.Raster;
 using SoftProof.RIPParsers.Raster;
@@ -26,6 +28,10 @@ namespace SoftProof.UI.Views;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
+
+    // Soft proof state: the transform is tied to the loaded job's profiles.
+    private ProofTransform? _proofTransform;
+    private bool _proofBusy;
     private readonly FileWatchService _watch = new();
     private IReadOnlyList<PlateLayer> _plates = Array.Empty<PlateLayer>();
     private int _plateWidth;
@@ -155,6 +161,10 @@ public partial class MainWindow : Window
     
     private void OnPlatesLoaded(object? sender, PlateSetEventArgs e)
     {
+        // A new job may name different profiles; keep the proof honest by dropping it.
+        Viewer.DisableProof();
+        _proofTransform = null;
+
         Viewer.ViewMode = _viewModel.ViewMode;
         Viewer.ProgressiveCount = _viewModel.ProgressiveCount;
         Viewer.ApertureSize = _viewModel.Aperture;
@@ -923,7 +933,7 @@ public partial class MainWindow : Window
                 const int tile = DetailTileCache.TileSize;
                 var originX = ax / decimation;
                 var originY = ay / decimation;
-                var sourceKey = work[0].Plate.GetHashCode();
+                var sourceKey = work[0].Plate.Id;
                 var decodedTiles = 0;
                 var reusedTiles = 0;
 
@@ -1315,6 +1325,74 @@ public partial class MainWindow : Window
                 _viewModel.ZoomActualSizeCommand.Execute(null);
                 e.Handled = true;
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Toggles ICC soft proofing: the plates are packed into CMYK and rendered through the press
+    /// profile to the monitor profile, so paper, ink and gamut limits are what the plate will look
+    /// like instead of a flat screen approximation.
+    /// </summary>
+    private async void ToggleSoftProof_Click(object sender, RoutedEventArgs e)
+    {
+        if (_proofBusy)
+            return;
+
+        _proofBusy = true;
+
+        try
+        {
+            if (Viewer.ProofEnabled)
+            {
+                Viewer.DisableProof();
+                _proofTransform = null;
+                _viewModel.StatusText = "Soft proof off - screen composite";
+                DiagnosticsLog.Info("soft proof disabled");
+                return;
+            }
+
+            var job = _viewModel.CurrentJob;
+            if (job is null)
+            {
+                _viewModel.StatusText = "Load a job before soft proofing.";
+                return;
+            }
+
+            _viewModel.StatusText = "Building proof transform...";
+
+            var engine = _viewModel.ColorEngine;
+            var (displayPath, simulationPath) = ProofProfileLocator.Resolve(job.ProofSettings);
+
+            var display = await engine.LoadProfileAsync(displayPath);
+            var simulation = await engine.LoadProfileAsync(simulationPath);
+
+            // The plates already are press-space data, so the simulation profile is also the
+            // document profile: proofing through it is a document -> simulation -> display pass.
+            _proofTransform = await engine.CreateProofTransformAsync(
+                display, simulation, job.ProofSettings, simulation);
+
+            var transform = _proofTransform;
+            var shown = await Viewer.EnableProofAsync(
+                (cmyk, ct) => engine.ApplyProofTransformAsync(transform, cmyk, ct));
+
+            _viewModel.StatusText = shown
+                ? $"Soft proof: {Path.GetFileName(simulationPath)} to {Path.GetFileName(displayPath)}"
+                : $"Soft proof unavailable: {Viewer.ProofFailure ?? "no plate data to render"}.";
+
+            DiagnosticsLog.Info(shown
+                ? $"soft proof on: {simulationPath} -> {displayPath}"
+                : "soft proof requested but the viewer had nothing to render");
+        }
+        catch (Exception ex)
+        {
+            _proofTransform = null;
+            Viewer.DisableProof();
+            _viewModel.StatusText = $"Soft proof failed: {ex.Message}";
+            DiagnosticsLog.Error("soft proof failed", ex);
+        }
+        finally
+        {
+            _proofBusy = false;
         }
     }
 }
