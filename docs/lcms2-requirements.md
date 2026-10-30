@@ -130,3 +130,19 @@ expressed as the proofing intent `AbsoluteColorimetric`). The two legs remain av
 
 LittleCMS errors are surfaced: `LcmsNative` installs a log handler and every failure message
 includes `lcms <code>: <text>`.
+
+### Bit depth is part of the formatter
+
+`FormatterFor` builds every lcms TYPE from the buffer the application actually moves. The integer
+formatter is **8 bits per sample** (`BYTES_SH(1)`), because plates and previews are `byte[]`
+(`PixelFormat.CMYK32`, `BGRA32`). A 16-bit formatter over an 8-bit buffer makes `cmsDoTransform`
+read and write past both arrays — silent corruption, or an access violation on small images.
+
+Destination formats match: `GetOutputFormat` returns `Gray8`/`RGB24`/`CMYK32`/`Lab32`, and the
+stride pads rows to four bytes. A profile whose colour space has no formatter (multi-channel,
+device link) is rejected at transform creation with `NotSupportedException` instead of being
+silently treated as CMYK.
+
+Guarded by `FormatterBitDepthTests`: the exact TYPE values for Gray/RGB/CMYK/Lab, the float
+variant, the unsupported-space error, and an 8-bit round trip whose destination stride proves the
+transform never allocated 16-bit rows.

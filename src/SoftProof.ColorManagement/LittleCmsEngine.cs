@@ -247,6 +247,9 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     {
         cancellationToken.ThrowIfCancellationRequested();
         
+        EnsureFormattable(sourceProfile);
+        EnsureFormattable(destProfile);
+
         var inputFormat = GetFormatter(sourceProfile.ColorSpace, false);
         var outputFormat = GetFormatter(destProfile.ColorSpace, false);
         
@@ -301,6 +304,10 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         EnsureProfile(document, documentProfile is null ? nameof(simulationProfile) : nameof(documentProfile));
         EnsureProfile(simulationProfile, nameof(simulationProfile));
         EnsureProfile(displayProfile, nameof(displayProfile));
+
+        EnsureFormattable(document);
+        EnsureFormattable(simulationProfile);
+        EnsureFormattable(displayProfile);
 
         if (displayProfile.ColorSpace is not (ColorSpace.RGB or ColorSpace.Gray))
         {
@@ -374,6 +381,16 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             TVIStage = tviStage,
             InkLimitStage = inkLimitStage
         };
+    }
+
+    private static void EnsureFormattable(IccProfile profile)
+    {
+        if (profile.ColorSpace is ColorSpace.Gray or ColorSpace.RGB or ColorSpace.CMYK or ColorSpace.Lab)
+            return;
+
+        throw new NotSupportedException(
+            $"Profile '{profile.Name}' is {profile.ColorSpace}; the engine only converts Gray, RGB, CMYK and Lab. " +
+            "Multi-channel or device-link profiles need a dedicated pipeline.");
     }
 
     private static void EnsureProfile(IccProfile profile, string parameterName)
@@ -568,14 +585,25 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         }
     }
     
-    private int GetFormatter(ColorSpace colorSpace, bool isFloat)
+    private int GetFormatter(ColorSpace colorSpace, bool isFloat) => FormatterFor(colorSpace, isFloat);
+
+    /// <summary>
+    /// lcms TYPE for a colour space. The bit depth is part of the format: this application moves
+    /// 8-bit buffers (CMYK32, BGRA32, byte[]), so the integer formatter must be 8 bits per sample.
+    /// A 16-bit formatter over an 8-bit buffer makes cmsDoTransform read and write past the end of
+    /// the pixel arrays.
+    /// </summary>
+    internal static int FormatterFor(ColorSpace colorSpace, bool isFloat)
     {
         var (channels, code) = colorSpace switch
         {
             ColorSpace.Gray => (1, LcmsNative.PT_GRAY),
             ColorSpace.RGB => (3, LcmsNative.PT_RGB),
             ColorSpace.Lab => (3, LcmsNative.PT_Lab),
-            _ => (4, LcmsNative.PT_CMYK)
+            ColorSpace.CMYK => (4, LcmsNative.PT_CMYK),
+            _ => throw new NotSupportedException(
+                $"No LittleCMS formatter for colour space '{colorSpace}'. " +
+                "Supported spaces are Gray, RGB, CMYK and Lab; multi-channel plates need an explicit mapping.")
         };
 
         var formatter = LcmsNative.COLORSPACE_SH(code)
@@ -595,8 +623,9 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             ColorSpace.Gray => PixelFormat.Gray8,
             ColorSpace.RGB => PixelFormat.RGB24,
             ColorSpace.CMYK => PixelFormat.CMYK32,
-            ColorSpace.Lab => PixelFormat.Lab48,
-            _ => PixelFormat.RGB48
+            ColorSpace.Lab => PixelFormat.Lab32,
+            _ => throw new NotSupportedException(
+                $"No output pixel format for colour space '{colorSpace}'.")
         };
     }
     
