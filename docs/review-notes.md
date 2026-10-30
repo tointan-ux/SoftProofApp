@@ -151,3 +151,37 @@ At 2400 dpi, a 1×1 / 3×3 / 5×5 pixel aperture covers only a tiny part of one 
 - Cap the total in-memory footprint explicitly. At this file size, the main risk is not CPU but memory pressure from four plates open at once.
 - Put pyramid building behind a progress dialog with cancel, since the first open will take longer than later ones.
 - Log decode time per strip, so you can find slow files and slow disks.
+
+
+---
+
+## Measurement tools: measured, not simulated
+
+**IDG analysis and the densitometer ran on synthetic data.** Both built a 1024 x 1024 stochastic
+pattern from `new Random(42)` at a fixed 50 % tint, so every file, every plate and every zoom
+produced the same readout. They now crop a 1024 px probe out of the loaded plate around its
+coverage-weighted ink centroid (`TryGetProbe`), pack it to the 1-bit layout the tools read, and
+pass that. The status line names the probe, e.g.
+`IDG analysis on Cyan 1024x1024 px at (5166,5494): quality 36.5/100`. With no decoded plate the
+commands say so instead of measuring noise. The densitometer is also reachable from
+*Inspect > Measure Density* — it had a command but no menu entry.
+
+**Colour measurement goes through LittleCMS.** `ColorMeasurementTool.CmykToLab` accepted a press
+profile and ignored it, using `(1-C)(1-K)` per channel. That shortcut cannot represent ink, paper
+or overprints — cyan and yellow are the worst cases — so measured Lab and ΔE were meaningless in a
+prepress check. `IColorEngine.ConvertCmykToLab(cmyk, profile)` now converts CMYK to Lab through the
+loaded press profile (8-bit CMYK in, 32-bit float Lab out) and refuses to run without one.
+
+**Slur/doubling and hue error/grayness are computed.** Both returned `(0, 0)` unconditionally:
+
+- *Hue error / grayness* use the Preucil definitions over the three filter densities
+  (hue error = (mid − low)/(high − low), grayness = low/high), so 1.4 / 0.5 / 0.2 reports 25 % and
+  14.29 %.
+- *Slur* is the directional imbalance of edge transitions (a smear loses transitions in one axis);
+  *doubling* is the share of one-pixel runs, which a ghost impression creates and a clean screen
+  does not. Both are percentages of the region, measured from the actual dots.
+
+**Engine lifetime.** `LittleCmsEngine` now uses the standard `Dispose(bool)` split: managed work
+under `disposing == true`, native handles (the Lab profile, every ICC profile it opened, and the
+context) released in both paths, finalizer calls `Dispose(false)`. Before, the finalizer called the
+public `Dispose`, and the profiles it opened were never closed.

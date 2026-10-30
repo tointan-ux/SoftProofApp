@@ -98,7 +98,8 @@
                                   CommandParameter="{x:Static viewer:ViewerTool.Measure}" />
                         <Separator />
                         <MenuItem Header="Run _Preflight" Command="{Binding RunPreflightCommand}" />
-                        <MenuItem Header="IDG Analysis (synthetic test data)" Command="{Binding RunIdgAnalysisCommand}" />
+                        <MenuItem Header="IDG Analysis (loaded plate)" Command="{Binding RunIdgAnalysisCommand}" />
+                        <MenuItem Header="Measure Density (loaded plate)" Command="{Binding MeasureDensityCommand}" />
                     </MenuItem>
                     <MenuItem Header="_Help">
                         <MenuItem Header="Clear pyramid cache" Command="{Binding ClearPyramidCacheCommand}" />

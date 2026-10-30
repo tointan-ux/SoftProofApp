@@ -76,6 +76,12 @@ public interface IColorEngine
         CancellationToken cancellationToken = default);
     
     /// <summary>
+    /// Convert a CMYK tint (percent per channel) to CIELAB using the press profile. The profile is
+    /// required: CMYK has no absolute meaning without the output condition it will be printed on.
+    /// </summary>
+    float[] ConvertCmykToLab(float[] cmykPercent, IccProfile printProfile);
+
+    /// <summary>
     /// Calculate DeltaE between two colors
     /// </summary>
     DeltaEResult CalculateDeltaE(float[] lab1, float[] lab2, DeltaEFormula formula = DeltaEFormula.CIE2000);

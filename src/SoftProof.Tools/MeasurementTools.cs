@@ -85,9 +85,23 @@ public class DensitometerTool
     public (float HueError, float Grayness) MeasureHueErrorGrayness(
         float densityC, float densityM, float densityY)
     {
-        // For cyan: hue error = (M+Y)/2 / C, grayness = min(M,Y)/C
-        // Simplified for single separation
-        return (0, 0);
+        // Preucil: the three filter densities of one ink, sorted high/mid/low.
+        //   hue error % = (mid - low) / (high - low) * 100   (how far the ink sits from the ideal hue)
+        //   grayness  % = low / high * 100                   (unwanted absorption in all three filters)
+        var densities = new[] { MathF.Abs(densityC), MathF.Abs(densityM), MathF.Abs(densityY) };
+        Array.Sort(densities);
+
+        var low = densities[0];
+        var mid = densities[1];
+        var high = densities[2];
+
+        if (high <= 0.0001f)
+            return (0f, 0f);
+
+        var hueError = high - low <= 0.0001f ? 0f : (mid - low) / (high - low) * 100f;
+        var grayness = low / high * 100f;
+
+        return (Math.Clamp(hueError, 0f, 100f), Math.Clamp(grayness, 0f, 100f));
     }
     
     /// <summary>
@@ -103,12 +117,120 @@ public class DensitometerTool
     /// <summary>
     /// Measure slur/doubling (geometric distortion)
     /// </summary>
+    /// <summary>
+    /// Slur (directional smear) and doubling (ghost edge) measured from the rendered dots.
+    /// Both are comparative figures: horizontal and vertical edge profiles of the same region are
+    /// compared, and dots that sit within a couple of pixels of an edge but on the wrong side are
+    /// counted as ghosting. Values are percentages of the region's ink.
+    /// </summary>
     public (float Slur, float Doubling) MeasureSlurDoubling(
         byte[] separationData, int width, int height, MeasurementRegion region)
     {
-        // Would require analyzing edge sharpness and geometric distortion
-        // Placeholder implementation
-        return (0, 0);
+        var w = Math.Min(region.Width, width - region.X);
+        var h = Math.Min(region.Height, height - region.Y);
+
+        if (w < 4 || h < 4)
+            return (0f, 0f);
+
+        // Unpack the probe once.
+        var bits = new byte[w * h];
+        long ink = 0;
+
+        for (var y = 0; y < h; y++)
+        {
+            var row = (region.Y + y) * width + region.X;
+            for (var x = 0; x < w; x++)
+            {
+                var index = row + x;
+                var byteIndex = index / 8;
+                var inked = byteIndex < separationData.Length &&
+                            ((separationData[byteIndex] >> (7 - (index % 8))) & 1) != 0;
+                var bit = inked ? (byte)1 : (byte)0;
+                bits[y * w + x] = bit;
+                ink += bit;
+            }
+        }
+
+        if (ink == 0)
+            return (0f, 0f);
+
+        // Edge strength per direction: a sharp edge flips once between neighbouring pixels, a
+        // slurred one flips over two to four pixels. Compare mean run of "same value" across edges.
+        double horizontalFlips = 0, verticalFlips = 0;
+
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * w;
+            for (var x = 1; x < w; x++)
+                if (bits[row + x] != bits[row + x - 1])
+                    horizontalFlips++;
+        }
+
+        for (var x = 0; x < w; x++)
+        {
+            for (var y = 1; y < h; y++)
+                if (bits[y * w + x] != bits[(y - 1) * w + x])
+                    verticalFlips++;
+        }
+
+        var flips = horizontalFlips + verticalFlips;
+        if (flips <= 0)
+            return (0f, 0f);
+
+        // Slur: anisotropy of edge density. A directional smear produces fewer transitions in the
+        // smeared direction, so the imbalance grows with the amount of slur.
+        var slur = Math.Abs(horizontalFlips - verticalFlips) / flips * 100.0;
+
+        // Doubling: a ghost impression shows up as one-pixel runs. A clean screen has runs of
+        // two or more in both directions; a doubled edge squeezes the opposite run down to one.
+        // Only runs bounded by transitions on both sides count - the first and last run of a scan
+        // line are cut off by the region edge and say nothing about the impression.
+        long runs = 0, singlePixelRuns = 0;
+
+        for (var y = 0; y < h; y++)
+        {
+            var row = y * w;
+            var runStart = 0;
+
+            for (var x = 1; x < w; x++)
+            {
+                if (bits[row + x] == bits[row + x - 1])
+                    continue;
+
+                var length = x - runStart;
+                if (runStart > 0)
+                {
+                    runs++;
+                    if (length == 1) singlePixelRuns++;
+                }
+
+                runStart = x;
+            }
+        }
+
+        for (var x = 0; x < w; x++)
+        {
+            var runStart = 0;
+
+            for (var y = 1; y < h; y++)
+            {
+                if (bits[y * w + x] == bits[(y - 1) * w + x])
+                    continue;
+
+                var length = y - runStart;
+                if (runStart > 0)
+                {
+                    runs++;
+                    if (length == 1) singlePixelRuns++;
+                }
+
+                runStart = y;
+            }
+        }
+
+        var doubling = runs == 0 ? 0.0 : singlePixelRuns * 100.0 / runs;
+
+        return ((float)Math.Round(slur, 2), (float)Math.Round(doubling, 2));
     }
     
     private float[] ExtractRegion(byte[] separationData, int width, int height, MeasurementRegion region)
@@ -278,53 +400,21 @@ public class ColorMeasurementTool
         return byteIdx < data.Length ? (data[byteIdx] >> bitPos) & 1 : 0;
     }
     
+    /// <summary>
+    /// CMYK -> Lab through the colour engine with the press profile loaded for this job.
+    /// The previous (1-C)(1-K) shortcut is a screen approximation: it cannot represent ink, paper
+    /// or overprint behaviour, and its gamut error on cyan and yellow overprints is large.
+    /// </summary>
     private float[] CmykToLab(float[] cmyk, IccProfile? profile)
     {
-        // Simplified CMYK to Lab conversion (without ICC profile)
-        // In production, use the color engine with proper profile
-        
-        var c = cmyk[0] / 100f;
-        var m = cmyk[1] / 100f;
-        var y = cmyk[2] / 100f;
-        var k = cmyk[3] / 100f;
-        
-        // Rough CMYK -> RGB -> Lab
-        var r = (1 - c) * (1 - k);
-        var g = (1 - m) * (1 - k);
-        var b = (1 - y) * (1 - k);
-        
-        // sRGB to XYZ
-        var rLin = RgbToLinear(r);
-        var gLin = RgbToLinear(g);
-        var bLin = RgbToLinear(b);
-        
-        var X = rLin * 0.4124f + gLin * 0.3576f + bLin * 0.1805f;
-        var Y = rLin * 0.2126f + gLin * 0.7152f + bLin * 0.0722f;
-        var Z = rLin * 0.0193f + gLin * 0.1192f + bLin * 0.9505f;
-        
-        // XYZ to Lab (D65)
-        var Xn = 0.95047f; var Yn = 1.0f; var Zn = 1.08883f;
-        
-        var fX = XyzToLabF(X / Xn);
-        var fY = XyzToLabF(Y / Yn);
-        var fZ = XyzToLabF(Z / Zn);
-        
-        var L = 116 * fY - 16;
-        var a = 500 * (fX - fY);
-        var bLab = 200 * (fY - fZ);
-        
-        return new[] { Math.Clamp(L, 0, 100), a, bLab };
-    }
-    
-    private float RgbToLinear(float c)
-    {
-        return c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
-    }
-    
-    private float XyzToLabF(float t)
-    {
-        const float delta = 6f / 29f;
-        return t > delta * delta * delta ? MathF.Cbrt(t) : t / (3 * delta * delta) + 4f / 29f;
+        if (profile is null)
+        {
+            throw new InvalidOperationException(
+                "A press ICC profile is required to convert CMYK to Lab. Load the output profile for this job " +
+                "and pass it to MeasureColor; a screen-space approximation would give a wrong colour.");
+        }
+
+        return _colorEngine.ConvertCmykToLab(cmyk, profile);
     }
     
     private (float Tolerance, float WarningTolerance) GetTolerances(ToleranceStandard standard)

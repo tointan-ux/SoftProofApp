@@ -58,6 +58,9 @@ internal static class LcmsNative
     
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr cmsCreateProfilePlaceholder(IntPtr context);
+
+    [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr cmsCreateLab4Profile(IntPtr whitePoint);
     
     // Profile info
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
@@ -200,6 +203,8 @@ public class LittleCmsEngine : IColorEngine, IDisposable
 {
     private readonly ILogger<LittleCmsEngine> _logger;
     private readonly IntPtr _context;
+    private readonly List<IntPtr> _loadedProfiles = new();
+    private IntPtr _labProfile;
     private bool _disposed;
     
     public LittleCmsEngine(ILogger<LittleCmsEngine> logger)
@@ -218,6 +223,8 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         var handle = LcmsNative.cmsOpenProfileFromFile(profilePath, "r");
         if (handle == IntPtr.Zero)
             throw new InvalidOperationException($"Failed to load ICC profile: {profilePath}");
+
+        _loadedProfiles.Add(handle);
         
         var profile = new IccProfile
         {
@@ -649,16 +656,115 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         return (stride + 3) & ~3;
     }
     
+    /// <summary>
+    /// CMYK tint to Lab through the press profile. LittleCMS gets a real 8-bit CMYK sample in and
+    /// returns 32-bit float Lab, so no intermediate screen-space approximation is involved.
+    /// </summary>
+    public float[] ConvertCmykToLab(float[] cmykPercent, IccProfile printProfile)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        ArgumentNullException.ThrowIfNull(cmykPercent);
+        ArgumentNullException.ThrowIfNull(printProfile);
+
+        if (cmykPercent.Length < 4)
+            throw new ArgumentException("CMYK needs four channel values (percent).", nameof(cmykPercent));
+
+        EnsureProfile(printProfile, nameof(printProfile));
+
+        if (printProfile.ColorSpace != ColorSpace.CMYK)
+        {
+            throw new InvalidOperationException(
+                $"'{printProfile.Name}' is {printProfile.ColorSpace}; a CMYK tint needs a CMYK press profile.");
+        }
+
+        var input = new byte[4];
+        for (var i = 0; i < 4; i++)
+            input[i] = (byte)Math.Clamp(Math.Round(cmykPercent[i] * 255.0 / 100.0), 0, 255);
+
+        var handle = LcmsNative.cmsCreateTransform(
+            printProfile.Handle, FormatterFor(ColorSpace.CMYK, isFloat: false),
+            LabProfile(), FormatterFor(ColorSpace.Lab, isFloat: true),
+            (int)RenderingIntent.RelativeColorimetric,
+            LcmsNative.cmsFLAGS_BLACKPOINTCOMPENSATION);
+
+        if (handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"LittleCMS could not convert CMYK to Lab through '{printProfile.Name}'" +
+                (LcmsNative.LastError is { } error ? $" ({error})" : string.Empty) + ".");
+        }
+
+        var source = GCHandle.Alloc(input, GCHandleType.Pinned);
+        var lab = new float[3];
+        var destination = GCHandle.Alloc(lab, GCHandleType.Pinned);
+
+        try
+        {
+            LcmsNative.cmsDoTransform(handle, source.AddrOfPinnedObject(), destination.AddrOfPinnedObject(),
+                                      (UIntPtr)1u);
+        }
+        finally
+        {
+            destination.Free();
+            source.Free();
+            LcmsNative.cmsDeleteTransform(handle);
+        }
+
+        return lab;
+    }
+
+    private IntPtr LabProfile()
+    {
+        if (_labProfile == IntPtr.Zero)
+            _labProfile = LcmsNative.cmsCreateLab4Profile(IntPtr.Zero);
+
+        if (_labProfile == IntPtr.Zero)
+            throw new InvalidOperationException("LittleCMS could not create a Lab profile.");
+
+        return _labProfile;
+    }
+
     public void Dispose()
     {
-        if (!_disposed)
-        {
-            if (_context != IntPtr.Zero)
-                LcmsNative.cmsDeleteContext(_context);
-            _disposed = true;
-        }
+        Dispose(disposing: true);
         GC.SuppressFinalize(this);
     }
-    
-    ~LittleCmsEngine() => Dispose();
+
+    /// <summary>
+    /// Managed work (logging) happens only when <paramref name="disposing"/> is true; the native
+    /// handles are released in both paths, because a finalizer must not touch managed state.
+    /// </summary>
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed)
+            return;
+
+        if (disposing)
+        {
+            // No managed disposables today; kept explicit so the split stays correct if one lands.
+            _logger.LogDebug("Colour engine disposed.");
+        }
+
+        if (_labProfile != IntPtr.Zero)
+        {
+            LcmsNative.cmsCloseProfile(_labProfile);
+            _labProfile = IntPtr.Zero;
+        }
+
+        foreach (var profile in _loadedProfiles)
+        {
+            if (profile != IntPtr.Zero)
+                LcmsNative.cmsCloseProfile(profile);
+        }
+
+        _loadedProfiles.Clear();
+
+        if (_context != IntPtr.Zero)
+            LcmsNative.cmsDeleteContext(_context);
+
+        _disposed = true;
+    }
+
+    ~LittleCmsEngine() => Dispose(disposing: false);
 }

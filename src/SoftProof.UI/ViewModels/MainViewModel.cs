@@ -23,7 +23,7 @@ public partial class MainViewModel : ObservableObject
 {
     // Synthetic IDG / densitometer probes are generated at a bounded size. Using the native
     // plate size here tried to allocate several gigabytes and overflowed y * width.
-    private const int SyntheticProbeSize = 1024;
+    private const int AnalysisProbeSize = 1024;
     private readonly RipParserRegistry _parserRegistry;
     private readonly IFileDialogService _fileDialogs;
     private readonly IColorEngine _colorEngine;
@@ -603,12 +603,12 @@ public partial class MainViewModel : ObservableObject
         
         try
         {
-            // Get active separation data
-            var sep = CurrentJob.Separations.FirstOrDefault(s => s.Color == ActiveSeparation);
-            if (sep == null) return;
-            
-            // Simulate separation data
-            var testData = GenerateTestSeparationData(SyntheticProbeSize, SyntheticProbeSize);
+            // Analysis runs on the plate that is actually loaded, cropped around its ink.
+            if (!TryGetProbe(out var probe, out var probeSize, out var where))
+            {
+                StatusText = "IDG analysis needs a decoded plate - load a job with raster data first.";
+                return;
+            }
             
             var parameters = new IdgParameters
             {
@@ -621,12 +621,11 @@ public partial class MainViewModel : ObservableObject
             };
             
             // Apply IDG
-            var result = _idgTool.ApplyIdgSimulation(testData, SyntheticProbeSize, SyntheticProbeSize, parameters);
-            
-            // Analyze quality
-            StochasticAnalysis = _idgTool.AnalyzeStochasticQuality(testData, SyntheticProbeSize, SyntheticProbeSize);
-            
-            StatusText = $"IDG Analysis complete. Quality: {StochasticAnalysis.QualityScore:F1}/100";
+            _idgTool.ApplyIdgSimulation(probe, probeSize, probeSize, parameters);
+
+            StochasticAnalysis = _idgTool.AnalyzeStochasticQuality(probe, probeSize, probeSize);
+
+            StatusText = $"IDG analysis on {where}: quality {StochasticAnalysis.QualityScore:F1}/100";
             IdgAnalysisCompleted?.Invoke(this, StochasticAnalysis);
         }
         catch (Exception ex)
@@ -640,23 +639,24 @@ public partial class MainViewModel : ObservableObject
     {
         if (CurrentJob == null) return;
         
-        // Get measurement region from viewer (center 10x10mm)
+        if (!TryGetProbe(out var probe, out var probeSize, out var where))
+        {
+            StatusText = "Densitometer needs a decoded plate - load a job with raster data first.";
+            return;
+        }
+
         var region = new MeasurementRegion
         {
-            X = SyntheticProbeSize / 2 - 500,
-            Y = SyntheticProbeSize / 2 - 500,
-            Width = 1000,
-            Height = 1000,
-            Name = "Center"
+            X = 0,
+            Y = 0,
+            Width = probeSize,
+            Height = probeSize,
+            Name = where
         };
-        
-        var sep = CurrentJob.Separations.FirstOrDefault(s => s.Color == ActiveSeparation);
-        if (sep == null) return;
-        
-        var testData = GenerateTestSeparationData(SyntheticProbeSize, SyntheticProbeSize);
-        LastMeasurement = _densitometer.MeasureDensity(testData, SyntheticProbeSize, SyntheticProbeSize, region);
-        
-        StatusText = $"Density: {LastMeasurement.Density:F3}";
+
+        LastMeasurement = _densitometer.MeasureDensity(probe, probeSize, probeSize, region);
+
+        StatusText = $"Density {LastMeasurement.Density:F3} on {where}";
     }
     
     [RelayCommand]
@@ -683,32 +683,85 @@ public partial class MainViewModel : ObservableObject
         ProofSettingsDialogRequested?.Invoke(this, ProofSettings);
     }
     
-    private byte[] GenerateTestSeparationData(int width, int height)
+    /// <summary>
+    /// Cuts an analysis probe out of the loaded plate, around its ink centroid, and packs it as
+    /// 1-bit data for the IDG/densitometer tools. Previously both tools ran on a synthetic 50 %
+    /// stochastic pattern (Random(42)), so every file produced identical readings.
+    /// </summary>
+    private bool TryGetProbe(out byte[] packed, out int size, out string where)
     {
-        // Generate stochastic screening test pattern
-        var data = new byte[((long)width * height + 7) / 8];
-        var random = new Random(42); // Deterministic
-        
-        for (int y = 0; y < height; y++)
+        packed = Array.Empty<byte>();
+        size = 0;
+        where = string.Empty;
+
+        var layer = _layers.FirstOrDefault(l => l.Separation.Color == ActiveSeparation)
+                    ?? _layers.FirstOrDefault();
+
+        if (layer is null || layer.Width <= 0 || layer.Height <= 0)
+            return false;
+
+        size = Math.Min(AnalysisProbeSize, Math.Min(layer.Width, layer.Height));
+
+        var (centreX, centreY) = InkCentre(layer);
+        var x0 = Math.Clamp(centreX - size / 2, 0, layer.Width - size);
+        var y0 = Math.Clamp(centreY - size / 2, 0, layer.Height - size);
+
+        packed = PackRegion(layer.Coverage, layer.Width, x0, y0, size, size);
+        where = $"{layer.Separation.Name} {size}x{size} px at ({x0},{y0})";
+
+        return true;
+    }
+
+    /// <summary>Coverage-weighted centroid, so the probe lands on ink instead of paper.</summary>
+    private static (int X, int Y) InkCentre(PlateLayer layer)
+    {
+        var width = layer.Width;
+        var height = layer.Height;
+        var coverage = layer.Coverage;
+        const int step = 8;
+
+        long sum = 0, sumX = 0, sumY = 0;
+
+        for (var y = 0; y < height; y += step)
         {
-            for (int x = 0; x < width; x++)
+            var row = y * width;
+            for (var x = 0; x < width; x += step)
             {
-                var idx = y * width + x;
-                var byteIdx = idx / 8;
-                var bitPos = 7 - (idx % 8);
-                
-                // Stochastic threshold
-                var threshold = (float)random.NextDouble();
-                var tint = 0.5f; // 50% tint
-                
-                if (threshold < tint)
-                    data[byteIdx] |= (byte)(1 << bitPos);
+                var value = coverage[row + x];
+                if (value <= 8)
+                    continue;
+
+                sum += value;
+                sumX += (long)x * value;
+                sumY += (long)y * value;
             }
         }
-        
-        return data;
+
+        return sum == 0
+            ? (width / 2, height / 2)
+            : ((int)(sumX / sum), (int)(sumY / sum));
     }
-    
+
+    /// <summary>Packs an 8-bit coverage window into the MSB-first 1-bit layout the tools read.</summary>
+    private static byte[] PackRegion(byte[] coverage, int stride, int x0, int y0, int width, int height)
+    {
+        var packed = new byte[(width * height + 7) / 8];
+        long bit = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            var row = (y0 + y) * stride + x0;
+
+            for (var x = 0; x < width; x++, bit++)
+            {
+                if (coverage[row + x] > 127)
+                    packed[bit >> 3] |= (byte)(0x80 >> (int)(bit & 7));
+            }
+        }
+
+        return packed;
+    }
+
     private static string RecentStorePath() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SoftProof", "recent.json");
 
