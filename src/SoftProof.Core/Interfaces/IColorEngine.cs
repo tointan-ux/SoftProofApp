@@ -48,12 +48,15 @@ public interface IColorEngine
         CancellationToken cancellationToken = default);
     
     /// <summary>
-    /// Create proofing transform (display -> simulation)
+    /// Create the soft-proof pipeline: document (press) -> display, proofed through the
+    /// simulation profile. When <paramref name="documentProfile"/> is null the simulation
+    /// profile doubles as the document profile, because plate data already arrives in press space.
     /// </summary>
     Task<ProofTransform> CreateProofTransformAsync(
         IccProfile displayProfile,
         IccProfile simulationProfile,
         ProofSettings settings,
+        IccProfile? documentProfile = null,
         CancellationToken cancellationToken = default);
     
     /// <summary>
@@ -151,8 +154,18 @@ public class ColorTransform : IDisposable
 /// </summary>
 public class ProofTransform : IDisposable
 {
+    /// <summary>Document (CMYK) -> simulation (CMYK): what the press will do with the ink.</summary>
     public ColorTransform? SimulationTransform { get; set; }
+
+    /// <summary>Simulation (CMYK) -> display (RGB): the second leg of the two-pass path.</summary>
     public ColorTransform? DisplayTransform { get; set; }
+
+    /// <summary>
+    /// One-pass composite, document (CMYK) -> display (RGB), proofed through the simulation
+    /// profile (`cmsCreateProofingTransform`). This is the transform the soft proof should use:
+    /// it carries paper-white simulation and the proofing intent in a single conversion.
+    /// </summary>
+    public ColorTransform? ProofingTransform { get; set; }
     public ProofSettings Settings { get; set; } = new();
     public TVIPipelineStage? TVIStage { get; set; }
     public InkLimitStage? InkLimitStage { get; set; }
@@ -164,6 +177,7 @@ public class ProofTransform : IDisposable
         {
             SimulationTransform?.Dispose();
             DisplayTransform?.Dispose();
+            ProofingTransform?.Dispose();
             IsDisposed = true;
         }
         GC.SuppressFinalize(this);

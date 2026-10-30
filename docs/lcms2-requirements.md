@@ -95,3 +95,38 @@ The GitHub Actions workflow should restore the native library. For the manual ap
 ```
 
 Or use the NuGet package approach which handles this automatically.
+
+## Soft-proof pipeline (LittleCMS interop)
+
+`LittleCmsEngine.CreateProofTransformAsync` builds the soft proof as LittleCMS intends:
+
+| role | profile | format |
+|---|---|---|
+| input (document) | press profile of the plate data (defaults to the simulation profile) | CMYK 8-bit |
+| output | display / monitor profile | RGB 8-bit |
+| proofing | press simulation profile | — (lcms derives it) |
+
+Four interop defects had to be fixed before any of this could run:
+
+1. `cmsCreateProofingTransform` was declared with an extra `proofingFormat` argument. lcms does not
+   take one — the extra parameter shifted `intent`, `proofingIntent` and `flags`, and the call
+   failed with `cmsERROR_NOT_SUITABLE` ("Couldn't link the profiles") for every profile pair.
+2. `cmsDoTransform` was declared as returning `int` and checked with `result == 0`. It returns
+   `void`, so every transform "failed" after doing its work.
+3. The type formatter table was malformed: `CHANNELS_SH` sat at bit 8 (lcms uses bit 3),
+   `BYTES_SH(2)` was treated as 16-bit (it means 2 bytes/sample) and a stray `OPTIMIZED_SH` bit was
+   OR-ed in. Formatters are now `COLORSPACE_SH(pt) | CHANNELS_SH(n) | BYTES_SH(1)`.
+4. The flag table was shifted four bits: `cmsFLAGS_SOFTPROOFING` was sent as `0x40000` instead of
+   `0x4000`.
+
+Additionally the transform roles were inverted (simulation profile as *output*, display profile as
+the *proofing* profile), a second transform was built from an `IntPtr.Zero` handle and never used,
+and the TVI/ink-limit stages were constructed twice.
+
+`ProofTransform.ProofingTransform` is the one-pass composite and is what
+`ApplyProofTransformAsync` now uses (`document → display`, proofed, with paper-white simulation
+expressed as the proofing intent `AbsoluteColorimetric`). The two legs remain available as
+`SimulationTransform` + `DisplayTransform` for callers that need the intermediate press-space frame.
+
+LittleCMS errors are surfaced: `LcmsNative` installs a log handler and every failure message
+includes `lcms <code>: <text>`.

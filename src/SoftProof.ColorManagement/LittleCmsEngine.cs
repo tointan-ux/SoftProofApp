@@ -19,6 +19,7 @@ internal static class LcmsNative
         // Resolve lcms2.dll explicitly so the app works whether the file sits next to the exe
         // or in runtimes\win-x64\native, and so a missing file gives an actionable error.
         NativeLibrary.SetDllImportResolver(typeof(LcmsNative).Assembly, ResolveLcms);
+        cmsSetLogErrorHandler(ErrorSink);
     }
     
     private static IntPtr ResolveLcms(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
@@ -85,7 +86,7 @@ internal static class LcmsNative
     public static extern IntPtr cmsCreateProofingTransform(
         IntPtr inputProfile, int inputFormat,
         IntPtr outputProfile, int outputFormat,
-        IntPtr proofingProfile, int proofingFormat,
+        IntPtr proofingProfile,
         int intent, int proofingIntent, int flags);
     
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
@@ -93,7 +94,7 @@ internal static class LcmsNative
     
     // Transform execution
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
-    public static extern int cmsDoTransform(IntPtr hTransform, IntPtr input, IntPtr output, UIntPtr size);
+    public static extern void cmsDoTransform(IntPtr hTransform, IntPtr input, IntPtr output, UIntPtr size);
     
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
     public static extern int cmsDoTransformLineStride(IntPtr hTransform, IntPtr input, IntPtr output, UIntPtr pixelsPerLine, UIntPtr nLines, int inputStride, int outputStride);
@@ -125,33 +126,48 @@ internal static class LcmsNative
     public const int INTENT_SATURATION = 2;
     public const int INTENT_ABSOLUTE_COLORIMETRIC = 3;
     
-    // Flags
+    // Flags - values from lcms2.h. The previous table was shifted by four bits, so
+    // cmsFLAGS_SOFTPROOFING (0x4000) was sent as 0x40000 and cmsCreateProofingTransform
+    // returned a null handle every time.
     public const int cmsFLAGS_BLACKPOINTCOMPENSATION = 0x00002000;
-    public const int cmsFLAGS_NOWHITEONWHITEFIXUP = 0x00004000;
-    public const int cmsFLAGS_HIGHRESPRECALC = 0x00008000;
-    public const int cmsFLAGS_LOWRESPRECALC = 0x00010000;
-    public const int cmsFLAGS_SOFTPROOFING = 0x00040000;
+    public const int cmsFLAGS_SOFTPROOFING = 0x00004000;
+    public const int cmsFLAGS_GAMUTCHECK = 0x00001000;
+    public const int cmsFLAGS_NOWHITEONWHITEFIXUP = 0x00000004;
+    public const int cmsFLAGS_HIGHRESPRECALC = 0x00000400;
+    public const int cmsFLAGS_LOWRESPRECALC = 0x00000800;
+    public const int cmsFLAGS_NOCACHE = 0x00000040;
+    public const int cmsFLAGS_NOOPTIMIZE = 0x00000100;
     
-    // Formatter bits - use methods instead of parameterized constants
-    public static int BYTES_SH(int x) => (x << 0);
-    public static int CHANNELS_SH(int x) => (x << 8);
-    public static int FORMATTER_FLAGS_SH(int x) => (x << 16);
-    
-    // Formatter flags
-    public const int FLOAT_SH = (1 << 0);
-    public const int LITTLE_ENDIAN_SH = (1 << 1);
-    public const int SWAP_FIRST_SH = (1 << 2);
-    public const int OPTIMIZED_SH = (1 << 3);
-    public const int PLANAR_SH = (1 << 4);
-    public const int CAN_CHANGE_FORMATTER_SH = (1 << 5);
-    public const int DO_NOT_CHECK_SH = (1 << 6);
-    public const int EXTRA_SH = (1 << 7);
-    public const int ALPHA_FIRST_SH = (1 << 8);
-    public const int EXTRA_ALPHA_FIRST_SH = (1 << 9);
-    public const int GUESS_DEVICE_CLASS_SH = (1 << 10);
-    public const int KEEP_SEQUENCE_SH = (1 << 11);
+    // Formatter bits, straight from lcms2.h:
+    //   CHANNELS_SH(c) = c << 3, BYTES_SH(b) = b (1, 2 or 4), COLORSPACE_SH(t) = t << 16,
+    //   OPTIMIZED_SH = bit 21, FLOAT_SH = bit 22.
+    // The old table had CHANNELS at bit 8 and BYTES as "2 = 16-bit", so every formatter was
+    // malformed: transforms were created and then failed in cmsDoTransform.
+    public static int COLORSPACE_SH(int x) => x << 16;
+    public static int CHANNELS_SH(int x) => x << 3;
+    public static int BYTES_SH(int x) => x;
+    public const int OPTIMIZED_SH = 1 << 21;
+    public const int FLOAT_SH = 1 << 22;
+
+    // PT_* colour space codes
+    public const int PT_GRAY = 3;
+    public const int PT_RGB = 4;
+    public const int PT_CMYK = 6;
+    public const int PT_Lab = 10;
     
     // Error handling
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void LogErrorHandler(IntPtr contextId, uint errorCode, [MarshalAs(UnmanagedType.LPStr)] string text);
+
+    [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
+    public static extern void cmsSetLogErrorHandler(LogErrorHandler handler);
+
+    /// <summary>Last message LittleCMS reported, surfaced in our exceptions.</summary>
+    public static string? LastError { get; private set; }
+
+    private static readonly LogErrorHandler ErrorSink = (_, code, text) =>
+        LastError = $"lcms {code}: {text}".Trim();
+
     [DllImport("lcms2", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr cmsGetErrorHandler(IntPtr context);
     
@@ -244,7 +260,9 @@ public class LittleCmsEngine : IColorEngine, IDisposable
             (int)intent, flags);
         
         if (transformHandle == IntPtr.Zero)
-            throw new InvalidOperationException("Failed to create color transform");
+            throw new InvalidOperationException(
+                $"Failed to create colour transform {sourceProfile.ColorSpace} -> {destProfile.ColorSpace}" +
+                (LcmsNative.LastError is { } error ? $" ({error})" : string.Empty));
         
         return new ColorTransform
         {
@@ -256,65 +274,118 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         };
     }
     
+    public Task<ProofTransform> CreateProofTransformAsync(
+        IccProfile displayProfile,
+        IccProfile simulationProfile,
+        ProofSettings settings,
+        CancellationToken cancellationToken = default) =>
+        CreateProofTransformAsync(displayProfile, simulationProfile, settings, documentProfile: null, cancellationToken);
+
     public async Task<ProofTransform> CreateProofTransformAsync(
         IccProfile displayProfile,
         IccProfile simulationProfile,
         ProofSettings settings,
+        IccProfile? documentProfile,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        
-        // Create TVI pipeline stage if TVI curves are provided
+
+        ArgumentNullException.ThrowIfNull(displayProfile);
+        ArgumentNullException.ThrowIfNull(simulationProfile);
+        ArgumentNullException.ThrowIfNull(settings);
+
+        // Plate data arrives in press space, so the press condition is the document side of the
+        // transform unless the caller names a different document profile.
+        var document = documentProfile ?? simulationProfile;
+
+        EnsureProfile(document, documentProfile is null ? nameof(simulationProfile) : nameof(documentProfile));
+        EnsureProfile(simulationProfile, nameof(simulationProfile));
+        EnsureProfile(displayProfile, nameof(displayProfile));
+
+        if (displayProfile.ColorSpace is not (ColorSpace.RGB or ColorSpace.Gray))
+        {
+            throw new InvalidOperationException(
+                $"The display profile must be an RGB or Gray profile; '{displayProfile.Name}' is {displayProfile.ColorSpace}. " +
+                "A soft proof ends on the monitor, so the output side cannot be a press space.");
+        }
+
+        // Created once and shared by the returned object — the old code built them twice and
+        // threw the first pair away.
         var tviStage = new TVIPipelineStage(settings.TVICurves ?? new Dictionary<SeparationColor, TVICurve>());
-        
-        // Create ink limit stage
         var inkLimitStage = new InkLimitStage(settings.InkLimit);
-        
-        // Create simulation transform (document -> print simulation)
-        var simTransform = await CreateTransformAsync(
-            new IccProfile { ColorSpace = ColorSpace.CMYK, Handle = IntPtr.Zero }, // Placeholder for input
-            simulationProfile,
-            settings.RenderingIntent,
-            settings.BlackPointCompensation);
-        
-        // Create display transform (simulation -> display)
-        var dispTransform = await CreateTransformAsync(
-            simulationProfile,
-            displayProfile,
-            RenderingIntent.RelativeColorimetric,
-            true);
-        
-        // Create proofing transform using LittleCMS built-in soft proofing
-        var inputFormat = GetFormatter(ColorSpace.CMYK, false);
-        var proofingFormat = GetFormatter(simulationProfile.ColorSpace, false);
-        var displayFormat = GetFormatter(displayProfile.ColorSpace, false);
-        
+
+        // Leg 1: document -> simulation. A real CMYK video (CMYK->CMYK), used by the two-pass path.
+        var simulationTransform = await CreateTransformAsync(
+            document, simulationProfile, settings.RenderingIntent, settings.BlackPointCompensation, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Leg 2: simulation -> display.
+        var displayTransform = await CreateTransformAsync(
+            simulationProfile, displayProfile, settings.RenderingIntent, settings.BlackPointCompensation, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Composite: document -> display, proofed through the simulation profile.
+        // Signature is (input, inFormat, output, outFormat, proofing, proofingFormat, intent,
+        // proofingIntent, flags). The old call passed the simulation profile as *output* and the
+        // display profile as the proofing profile, so it transformed back into press space.
         var flags = LcmsNative.cmsFLAGS_SOFTPROOFING;
         if (settings.BlackPointCompensation)
             flags |= LcmsNative.cmsFLAGS_BLACKPOINTCOMPENSATION;
-        
-        // lcms needs a real input profile: use the simulation profile as the document profile
-        // (the plate data is already in print space and we simulate display appearance).
-        var proofHandle = LcmsNative.cmsCreateProofingTransform(
-            simulationProfile.Handle, inputFormat,
-            simulationProfile.Handle, GetFormatter(simulationProfile.ColorSpace, false),
+
+        // Paper-white simulation is the proofing leg rendered with the absolute intent.
+        var proofingIntent = settings.SimulatePaperColor
+            ? RenderingIntent.AbsoluteColorimetric
+            : settings.RenderingIntent;
+
+        var proofingHandle = LcmsNative.cmsCreateProofingTransform(
+            document.Handle, GetFormatter(document.ColorSpace, false),
             displayProfile.Handle, GetFormatter(displayProfile.ColorSpace, false),
+            simulationProfile.Handle,
             (int)settings.RenderingIntent,
-            (int)RenderingIntent.RelativeColorimetric,
+            (int)proofingIntent,
             flags);
-        
-        var proofTransform = new ProofTransform
+
+        if (proofingHandle == IntPtr.Zero)
         {
-            SimulationTransform = new ColorTransform { Handle = proofHandle },
-            DisplayTransform = dispTransform,
+            simulationTransform.Dispose();
+            displayTransform.Dispose();
+
+            throw new InvalidOperationException(
+                $"LittleCMS rejected the proofing transform: {document.Name} ({document.ColorSpace}) -> " +
+                $"{displayProfile.Name} ({displayProfile.ColorSpace}) proofed through " +
+                $"{simulationProfile.Name} ({simulationProfile.ColorSpace}). " +
+                "Check that all three profiles are valid and that the simulation profile matches the plate space." +
+                (LcmsNative.LastError is { } error ? $" LittleCMS said: {error}" : string.Empty));
+        }
+
+        return new ProofTransform
+        {
+            SimulationTransform = simulationTransform,
+            DisplayTransform = displayTransform,
+            ProofingTransform = new ColorTransform
+            {
+                Handle = proofingHandle,
+                SourceProfile = document,
+                DestProfile = displayProfile,
+                Intent = settings.RenderingIntent,
+                BlackPointCompensation = settings.BlackPointCompensation
+            },
             Settings = settings,
-            TVIStage = new TVIPipelineStage(settings.TVICurves ?? new Dictionary<SeparationColor, TVICurve>()),
-            InkLimitStage = new InkLimitStage(settings.InkLimit)
+            TVIStage = tviStage,
+            InkLimitStage = inkLimitStage
         };
-        
-        return proofTransform;
     }
-    
+
+    private static void EnsureProfile(IccProfile profile, string parameterName)
+    {
+        if (profile.Handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                $"{parameterName} is not loaded: its native ICC handle is null, so no transform can be built. " +
+                "Load the profile with LoadProfileAsync first, and do not reuse a disposed profile.");
+        }
+    }
+
     public async Task<BitmapData> ApplyTransformAsync(
         ColorTransform transform,
         BitmapData source,
@@ -337,15 +408,12 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         
         try
         {
-            var pixelCount = (UIntPtr)(source.Width * source.Height);
-            var result = LcmsNative.cmsDoTransform(
+            var pixelCount = (UIntPtr)(uint)(source.Width * source.Height);
+            LcmsNative.cmsDoTransform(
                 transform.Handle,
                 sourceHandle.AddrOfPinnedObject(),
                 destHandle.AddrOfPinnedObject(),
                 pixelCount);
-            
-            if (result == 0)
-                throw new InvalidOperationException("Color transform failed");
         }
         finally
         {
@@ -375,13 +443,29 @@ public class LittleCmsEngine : IColorEngine, IDisposable
         Buffer.BlockCopy(tviOutput, 0, inkLimitedData, 0, tviOutput.Length);
         proofTransform.InkLimitStage?.EnforceLimit(inkLimitedData, source.Width * source.Height);
         
-        // Step 3: Apply simulation transform (document -> print simulation)
+        // Step 3: one pass through the proofing transform when it exists — it already carries the
+        // simulation profile and the proofing intent, so chaining the two legs would proof twice.
+        if (proofTransform.ProofingTransform is { } composite)
+        {
+            var proofInput = new BitmapData
+            {
+                Width = source.Width,
+                Height = source.Height,
+                Format = PixelFormat.CMYK32,
+                Stride = CalculateStride(source.Width, PixelFormat.CMYK32),
+                Pixels = inkLimitedData
+            };
+
+            return await ApplyTransformAsync(composite, proofInput, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Fallback: two legs, for transforms built before the composite was available.
         var simInput = new BitmapData
         {
             Width = source.Width,
             Height = source.Height,
-            Format = PixelFormat.CMYK64,
-            Stride = CalculateStride(source.Width, PixelFormat.CMYK64),
+            Format = PixelFormat.CMYK32,
+            Stride = CalculateStride(source.Width, PixelFormat.CMYK32),
             Pixels = inkLimitedData
         };
         
@@ -486,20 +570,21 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     
     private int GetFormatter(ColorSpace colorSpace, bool isFloat)
     {
-        var channels = colorSpace switch
+        var (channels, code) = colorSpace switch
         {
-            ColorSpace.Gray => 1,
-            ColorSpace.RGB or ColorSpace.Lab => 3,
-            ColorSpace.CMYK => 4,
-            _ => 4
+            ColorSpace.Gray => (1, LcmsNative.PT_GRAY),
+            ColorSpace.RGB => (3, LcmsNative.PT_RGB),
+            ColorSpace.Lab => (3, LcmsNative.PT_Lab),
+            _ => (4, LcmsNative.PT_CMYK)
         };
-        
-        var bytes = isFloat ? 4 : 2; // 16-bit or 32-bit float
-        var formatter = (channels << 8) | (bytes << 0);
-        
-        if (isFloat) formatter |= LcmsNative.FLOAT_SH;
-        formatter |= LcmsNative.OPTIMIZED_SH;
-        
+
+        var formatter = LcmsNative.COLORSPACE_SH(code)
+                        | LcmsNative.CHANNELS_SH(channels)
+                        | LcmsNative.BYTES_SH(isFloat ? 4 : 1);
+
+        if (isFloat)
+            formatter |= LcmsNative.FLOAT_SH;
+
         return formatter;
     }
     
@@ -507,9 +592,9 @@ public class LittleCmsEngine : IColorEngine, IDisposable
     {
         return colorSpace switch
         {
-            ColorSpace.Gray => PixelFormat.Gray16,
-            ColorSpace.RGB => PixelFormat.RGB48,
-            ColorSpace.CMYK => PixelFormat.CMYK64,
+            ColorSpace.Gray => PixelFormat.Gray8,
+            ColorSpace.RGB => PixelFormat.RGB24,
+            ColorSpace.CMYK => PixelFormat.CMYK32,
             ColorSpace.Lab => PixelFormat.Lab48,
             _ => PixelFormat.RGB48
         };
