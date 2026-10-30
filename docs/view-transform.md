@@ -128,3 +128,23 @@ Instrumentation used to find it: a temporary trace of `camera / native / base / 
 imageRect / content` on every overlay render (removed again), which showed
 `native=74648 base=9331 f=8` — the 8× discrepancy — and a centre of `(73873, 40752)` on a
 sheet whose ink centroid is `(45442, 48062)`.
+
+### Difference / Blink below 25 % (fixed)
+
+They were fine at 1:1 and coarse when zoomed out, because the overlay sampled the 1 400 px preview
+raster: at 25 % one preview pixel covered ~6 native pixels, and at fit ~48 — the plates were sharp,
+the comparison was made of blocks.
+
+The provider now decimates instead of refusing: it asks for `decimation = native px per DIP`
+(clamped 1…64) and decodes the visible region at roughly screen resolution, so
+`SetPlates`-time previews are no longer the source for these modes. `Difference` compares the two
+tiles pixel by pixel (`TryDrawNativeDifference`) and reports the percentage from that comparison;
+`Blink` blits the same tiles.
+
+Note `RenderDetailTileAsync(…, width, height, decimation, …)` takes the *decoded* size — passing the
+native size with a decimation of 48 asked for a 74 648 × 38 051 allocation and failed with
+"Array dimensions exceeded supported range".
+
+Observed at fit (1 %): `overlay native side 0: 74646x38051 decimation=48`, and the sheet renders
+smoothly in Slide. With two identical plates the difference of a zoomed-out view is legitimately
+all-equal, which reads as a near-white page — the badge still reports 0.00 %.

@@ -517,6 +517,20 @@ public sealed class PlateCompareView : FrameworkElement
                         Math.Max(0, x1 - x0) / factor, Math.Max(0, y1 - y0) / factor);
     }
 
+    /// <summary>The provider's tile for one side, or null when it cannot serve this zoom.</summary>
+    private (BitmapSource Bitmap, Rect BaseRect)? NativeSide(int side)
+    {
+        if (NativeLayerProvider is null)
+            return null;
+
+        var visible = VisibleBaseRect();
+        if (visible.Width < 1 || visible.Height < 1)
+            return null;
+
+        var tile = NativeLayerProvider(side, visible);
+        return tile is { BaseRect.Width: > 0 } t ? t : null;
+    }
+
     /// <summary>Draw a bitmap that covers <paramref name="baseRect"/> of the image, at device resolution.</summary>
     private void DrawNativeBitmap(DrawingContext dc, BitmapSource bmp, Rect baseRect, Int32Rect? clip, bool clear, bool blit)
     {
@@ -611,6 +625,9 @@ public sealed class PlateCompareView : FrameworkElement
     /// <summary>Per-pixel difference straight from both native coverages.</summary>
     private void DrawDifferenceDevice(DrawingContext dc)
     {
+        if (TryDrawNativeDifference(dc))
+            return;
+
         if (_leftCoverage is null && _rightCoverage is null)
             return;
 
@@ -758,7 +775,11 @@ public sealed class PlateCompareView : FrameworkElement
         }
         else
         {
-            if (_showRight)
+            var native = NativeSide(_showRight ? 1 : 0);
+
+            if (native is { } n)
+                DrawNativeBitmap(dc, n.Bitmap, n.BaseRect, null, true, true);
+            else if (_showRight)
                 DrawCoverageDevice(dc, _rightLayer, _rightCoverage, _rightW, _rightH, null);
             else
                 DrawCoverageDevice(dc, _leftLayer, _leftCoverage, _leftW, _leftH, null);
@@ -817,6 +838,94 @@ public sealed class PlateCompareView : FrameworkElement
             : $"Missing {_comparison.Missing:N0}  Extra {_comparison.Extra:N0}  ({_comparison.ErrorPercentOfInk:0.00}% of ink)";
 
         DrawBadge(dc, text, _imageRect.Left + 10, _imageRect.Top + 10);
+    }
+
+    /// <summary>
+    /// Difference straight from the two native tiles. Sampling the 1 400 px preview instead
+    /// turns into 17-pixel blocks once the job is zoomed out — the plates are crisp, the
+    /// difference was not.
+    /// </summary>
+    private bool TryDrawNativeDifference(DrawingContext dc)
+    {
+        var left = NativeSide(0);
+        var right = NativeSide(1);
+        if (left is not { } a || right is not { } b)
+            return false;
+
+        var w = a.Bitmap.PixelWidth;
+        var h = a.Bitmap.PixelHeight;
+        if (w < 1 || h < 1 || b.Bitmap.PixelWidth != w || b.Bitmap.PixelHeight != h)
+            return false;
+
+        var pa = new byte[w * h * 4];
+        var pb = new byte[w * h * 4];
+        a.Bitmap.CopyPixels(pa, w * 4, 0);
+        b.Bitmap.CopyPixels(pb, w * 4, 0);
+
+        var pw = EnsureDevice(out var ph);
+        var dest = new Int32Rect(0, 0, pw, ph);
+
+        // Which device pixel this tile pixel lands on.
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var destX = _imageRect.X + a.BaseRect.X / Math.Max(1, _basePlateWidth) * _imageRect.Width;
+        var destY = _imageRect.Y + a.BaseRect.Y / Math.Max(1.0, PlateHeight / Math.Max(1, _nativeFactor)) * _imageRect.Height;
+        var destW = a.BaseRect.Width / Math.Max(1, _basePlateWidth) * _imageRect.Width;
+        var destH = a.BaseRect.Height / Math.Max(1.0, PlateHeight / Math.Max(1, _nativeFactor)) * _imageRect.Height;
+
+        var scaleX = destW * dpi.DpiScaleX / w;
+        var scaleY = destH * dpi.DpiScaleY / h;
+
+        long differing = 0, seen = 0;
+
+        for (var ty = 0; ty < h; ty++)
+        {
+            var py0 = (int)Math.Floor((destY * dpi.DpiScaleY) + ty * scaleY);
+            var py1 = (int)Math.Ceiling((destY * dpi.DpiScaleY) + (ty + 1) * scaleY);
+            py1 = Math.Min(py1, ph);
+            if (py1 <= py0) py1 = Math.Min(py0 + 1, ph);
+
+            for (var tx = 0; tx < w; tx++)
+            {
+                var i = (ty * w + tx) * 4;
+                var delta = Math.Abs(pa[i] - pb[i]) + Math.Abs(pa[i + 1] - pb[i + 1]) + Math.Abs(pa[i + 2] - pb[i + 2]);
+                var differs = delta / 3 > DifferenceThreshold;
+
+                seen++;
+                if (differs) differing++;
+
+                var px0 = (int)Math.Floor((destX * dpi.DpiScaleX) + tx * scaleX);
+                var px1 = (int)Math.Ceiling((destX * dpi.DpiScaleX) + (tx + 1) * scaleX);
+                px1 = Math.Min(px1, pw);
+                if (px1 <= px0) px1 = Math.Min(px0 + 1, pw);
+
+                var value = differs
+                    ? new byte[] { 40, 40, 235 }
+                    : new byte[] { 245, 245, 245 };
+
+                for (var y = Math.Max(0, py0); y < py1; y++)
+                {
+                    var row = y * pw;
+                    for (var x = Math.Max(0, px0); x < px1; x++)
+                    {
+                        var o = (row + x) * 4;
+                        _devicePixels![o] = value[0];
+                        _devicePixels[o + 1] = value[1];
+                        _devicePixels[o + 2] = value[2];
+                        _devicePixels[o + 3] = 255;
+                    }
+                }
+            }
+        }
+
+        if (seen > 0)
+        {
+            _differencePercent = differing * 100.0 / seen;
+            DifferencePercent = _differencePercent;
+            DifferenceMeasured?.Invoke(this, _differencePercent);
+        }
+
+        BlitDevice(dc);
+        return true;
     }
 
     private void DrawCentred(DrawingContext dc, string text, double y)

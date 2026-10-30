@@ -744,10 +744,23 @@ public partial class MainWindow : Window
 
             var ow = nx1 - nx0;
             var oh = ny1 - ny0;
-            if (ow < 1 || oh < 1 || (long)ow * oh > 24_000_000)
+            if (ow < 1 || oh < 1)
                 return null;
 
-            var key = plate.GetHashCode() + "|" + nx0 + "|" + ny0 + "|" + ow + "|" + oh;
+            // Decimate to roughly one decode pixel per screen pixel. Without this a zoomed-out
+            // view asks for the whole plate at native resolution, gets rejected by the tile
+            // budget, and the caller falls back to the 1400 px preview — which is what made
+            // Difference and Blink look blocky below 25 %.
+            var viewportWidth = Math.Max(1.0, CompareOverlay.ActualWidth);
+            var nativePerDip = ow / viewportWidth;
+            var decimation = Math.Clamp((int)Math.Round(nativePerDip), 1, 64);
+
+            var decodedW = Math.Max(1, ow / decimation);
+            var decodedH = Math.Max(1, oh / decimation);
+            if ((long)decodedW * decodedH > 24_000_000)
+                return null;
+
+            var key = plate.GetHashCode() + "|" + nx0 + "|" + ny0 + "|" + ow + "|" + oh + "|" + decimation;
 
             if (slot.Key == key)
                 return slot.Value;
@@ -769,7 +782,7 @@ public partial class MainWindow : Window
                 try
                 {
                     var bitmap = await RenderDetailTileAsync(
-                        new[] { (plate, source) }, nx0, ny0, ow, oh, 1, CancellationToken.None)
+                        new[] { (plate, source) }, nx0, ny0, decodedW, decodedH, decimation, CancellationToken.None)
                         .ConfigureAwait(false);
                     decoded = (bitmap, baseRect);
                 }
@@ -789,7 +802,7 @@ public partial class MainWindow : Window
 
                     if (decoded is not null)
                     {
-                        DiagnosticsLog.Info($"overlay native side {side}: {ow}x{oh} at 1:1");
+                        DiagnosticsLog.Info($"overlay native side {side}: {ow}x{oh} decimation={decimation}");
                         CompareOverlay.InvalidateFrame();
                     }
                 });
