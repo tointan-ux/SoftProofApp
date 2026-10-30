@@ -42,4 +42,8 @@
     <Resource Include="Resources\**\*.png" />
     <Resource Include="Resources\**\*.xaml" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="SoftProof.Tests" />
+  </ItemGroup>
+
 </Project>

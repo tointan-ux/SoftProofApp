@@ -181,7 +181,8 @@ public static class PbfReader
 
         if (directoryOffset > 0)
         {
-            if (directoryOffset + directoryLength > stream.Length)
+            // uint + uint wraps: 0xFFFF_FF00 + 0x200 would land back inside the file.
+            if ((long)directoryOffset + directoryLength > stream.Length)
                 throw new PbfFormatException(
                     $"Page-buffer directory (offset {directoryOffset}, {directoryLength} bytes) " +
                     "runs past the end of the file.");
@@ -248,7 +249,16 @@ public static class PbfReader
 
         for (var i = 0; i < count; i++)
         {
-            stream.ReadExactly(lengthBuffer);
+            try
+            {
+                stream.ReadExactly(lengthBuffer);
+            }
+            catch (EndOfStreamException)
+            {
+                throw new PbfFormatException(
+                    $"Separation name table is truncated: entry {i} of {count} starts past the end of the file.");
+            }
+
             var length = littleEndian
                 ? BinaryPrimitives.ReadUInt16LittleEndian(lengthBuffer)
                 : BinaryPrimitives.ReadUInt16BigEndian(lengthBuffer);
@@ -256,7 +266,16 @@ public static class PbfReader
                 throw new PbfFormatException($"Separation name {i} is {length} bytes long - corrupt header.");
 
             var nameBytes = new byte[length];
-            stream.ReadExactly(nameBytes);
+            try
+            {
+                stream.ReadExactly(nameBytes);
+            }
+            catch (EndOfStreamException)
+            {
+                throw new PbfFormatException(
+                    $"Separation name {i} claims {length} bytes but the file ends first - corrupt header.");
+            }
+
             names.Add(Encoding.UTF8.GetString(nameBytes));
         }
 
@@ -292,9 +311,24 @@ public static class PbfReader
 
         // Legacy sequential layout: raw planes packed back to back after the name table.
         var nameTableBytes = header.Names.Sum(n => 2 + Encoding.UTF8.GetByteCount(n));
-        long offset = (header.Version >= 2 ? HeaderV2Size : 22) + nameTableBytes;
+        var offset = (header.Version >= 2 ? HeaderV2Size : 22) + (long)nameTableBytes;
         var rowBytes = PbfSeparation.ComputeRowBytes(header.Width, header.BitDepth);
-        var size = (int)((long)rowBytes * header.Height);
+
+        var planeBytes = (long)rowBytes * header.Height;
+
+        // A sequential page buffer holds its planes in the file itself, so a header claiming more
+        // than the file can hold is a lie and must not be turned into a multi-gigabyte allocation.
+        if (planeBytes * header.SeparationCount > stream.Length)
+        {
+            throw new PbfFormatException(
+                $"Page buffer declares {header.SeparationCount} planes of {planeBytes:N0} bytes each " +
+                $"({planeBytes * header.SeparationCount:N0} total) but the file is only {stream.Length:N0} bytes.");
+        }
+
+        if (planeBytes > int.MaxValue)
+            throw new PbfFormatException($"Page-buffer plane of {planeBytes:N0} bytes is too large to decode.");
+
+        var size = (int)planeBytes;
         var oneIsInk = !header.Flags.HasFlag(PbfFlags.Inverted);
 
         for (var i = 0; i < header.SeparationCount; i++)

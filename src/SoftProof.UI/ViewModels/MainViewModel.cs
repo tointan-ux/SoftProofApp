@@ -971,12 +971,8 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private static string SanitizeFileName(string name)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        var clean = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
-        return string.IsNullOrWhiteSpace(clean) ? "job" : clean;
-    }
+    /// <summary>File-name policy lives in Core, where the rules can be tested without WPF.</summary>
+    internal static string SanitizeFileName(string name) => SoftProof.Core.Utilities.SafeFileName.For(name);
 
     private string BuildHtmlReport(PrintJob job)
     {

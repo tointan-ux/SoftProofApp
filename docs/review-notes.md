@@ -185,3 +185,57 @@ loaded press profile (8-bit CMYK in, 32-bit float Lab out) and refuses to run wi
 under `disposing == true`, native handles (the Lab profile, every ICC profile it opened, and the
 context) released in both paths, finalizer calls `Dispose(false)`. Before, the finalizer called the
 public `Dispose`, and the profiles it opened were never closed.
+
+
+---
+
+## Security review: the three claims, checked
+
+### Malformed stream protection — true, with three holes now closed
+
+`PbfReader.ValidateGeometry` does reject non-positive sizes, pages above 4 Gpx, separation counts
+outside 1..64 and files shorter than the header. Three ways around it were still open:
+
+- **Directory bounds used 32-bit arithmetic.** `directoryOffset + directoryLength > stream.Length`
+  wraps: `0xFFFF_FF00 + 0x200` lands at `0x100`, inside the file. Now summed as `long`.
+- **A truncated name table escaped as `EndOfStreamException`.** `ReadNames` called
+  `stream.ReadExactly`, so a header claiming two separations with no payload threw a raw IO
+  exception instead of `PbfFormatException` naming the entry. Both the length field and the name
+  bytes are now wrapped with an actionable message.
+- **The sequential layout was not bounded by the file.** A v1/v2 header with no directory derives
+  plane sizes from width/height; a 400 Mpx header in a 36-byte file passed the geometry cap and
+  would have been allocated. The reader now rejects a declared payload larger than the file.
+
+Covered by `PbfMalformedStreamTests` (9 cases: wrapping offset, truncated table, name past EOF,
+oversized sequential layout, and the geometry cap table).
+
+### Dependency hygiene — the claim does not hold
+
+The pinned versions were **not** the security-updated ones, and pinning alone was not enough:
+
+- `SixLabors.ImageSharp` was 3.1.11 (the claim said 3.1.3). `dotnet list package --vulnerable`
+  reports **six advisories** against it, four of them High — tiled-fax TIFF heap OOB write, TIFF
+  CCITT T4 encoder overflow, histogram-equalisation index, among others.
+- The fix is 3.2.0 in the 3.x line (or 4.1.2+). **3.2.0 adds a build-time Six Labors licence
+  check**, so upgrading now fails the build with *"No Six Labors license found"*. The repo stays on
+  **3.1.12** (the newest 3.1.x) and the residual risk is documented rather than silently accepted:
+  the advisories are in TIFF decode/encode paths, and plate decoding uses this project's own
+  TIFF/PBF readers, not ImageSharp. A licensed 3.2.0/4.x bump or replacing ImageSharp in
+  `ReferenceRaster`/`AdditionalParsers` is the clean fix, and it is a licensing decision.
+- `Microsoft.SourceLink.GitHub` 8.0.0 pulled `Microsoft.Build.Tasks.Git` 8.0.0, flagged Moderate
+  (CVE-2026-62900). Bumped to 10.0.403, which is build-time only (`PrivateAssets="All"`).
+- `Moq` 4.20.70 and `xunit` 2.8.1 are current and not flagged.
+
+### File system sanitization — partly true, hardened
+
+`SanitizeFileName` replaced `Path.GetInvalidFileNameChars()` and trimmed — which leaves three
+Windows traps: reserved device names (`CON`, `PRN`, `NUL`, `COM1`… are devices **with or without**
+an extension), trailing dots and spaces (silently stripped by Win32), and unbounded length (the
+report suffix has to fit in MAX_PATH). It also lived in the view model, where it could not be
+tested without WPF.
+
+The policy now lives in `SoftProof.Core.Utilities.SafeFileName`: control characters are replaced
+along with invalid ones, trailing dots/spaces trimmed, length capped at 80, reserved stems
+prefixed with `_`, and all-replacement names (`"///"` → `"___"`) fall back to `job`.
+`MainViewModel.SanitizeFileName` delegates to it. Covered by 15 cases in
+`FileNameSanitizationTests`.
