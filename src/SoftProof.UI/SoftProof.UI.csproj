@@ -28,9 +28,9 @@
     <ProjectReference Include="..\SoftProof.RIPParsers\SoftProof.RIPParsers.csproj" />
     <ProjectReference Include="..\SoftProof.Viewer\SoftProof.Viewer.csproj" />
     <ProjectReference Include="..\SoftProof.Tools\SoftProof.Tools.csproj" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.22" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.22" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.22" />
     <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.39" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
     <PackageReference Include="MaterialDesignThemes" Version="4.9.0" />

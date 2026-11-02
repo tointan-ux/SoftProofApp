@@ -10,12 +10,12 @@
       },
       "Microsoft.Extensions.Logging.Abstractions": {
         "type": "Direct",
-        "requested": "[8.0.5, )",
-        "resolved": "9.0.0",
-        "contentHash": "g0UfujELzlLbHoVG8kPKVBaW470Ewi+jnptGS9KUi6jcb+k2StujtK3m26DFSGGwQ/+bVgZfsWqNzlP6YOejvw==",
+        "requested": "[9.0.22, )",
+        "resolved": "9.0.22",
+        "contentHash": "REayp367aujZONmJbX6ctXSZAJjgovhhIy8qoHsY50y/nXhtpPPndsXgz7EHnbZef5eCIMG0VbTjFf3/sXs5aQ==",
         "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.0",
-          "System.Diagnostics.DiagnosticSource": "9.0.0"
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.22",
+          "System.Diagnostics.DiagnosticSource": "9.0.22"
         }
       },
       "Microsoft.SourceLink.GitHub": {
@@ -50,8 +50,8 @@
       },
       "Microsoft.Extensions.DependencyInjection.Abstractions": {
         "type": "Transitive",
-        "resolved": "9.0.0",
-        "contentHash": "+6f2qv2a3dLwd5w6JanPIPs47CxRbnk+ZocMJUhv9NxP88VlOcJYZs9jY+MYSjxvady08bUZn6qgiNh7DadGgg=="
+        "resolved": "9.0.22",
+        "contentHash": "SFzDXodpxwCTJQ9IsmqhCsh8fAElRqGtuOqwQACA7pKBj277g+A8q8zzZebk0Q+MKrHX+WFT3/i64n4BdhsMpQ=="
       },
       "Microsoft.SourceLink.Common": {
         "type": "Transitive",
@@ -70,39 +70,32 @@
       },
       "System.Diagnostics.DiagnosticSource": {
         "type": "Transitive",
-        "resolved": "9.0.0",
-        "contentHash": "ddppcFpnbohLWdYKr/ZeLZHmmI+DXFgZ3Snq+/E7SwcdW4UnvxmaugkwGywvGVWkHPGCSZjCP+MLzu23AL5SDw=="
+        "resolved": "9.0.22",
+        "contentHash": "8i26SD/e3pN2h41qco04V1O4rv7sCkeQc20/CGKn1tRhQByOeE55P+iuRYVD82ZtTXRG32PkTIJ7PUk316iM1Q=="
       },
       "softproof.colormanagement": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
-          "SoftProof.Core": "[1.0.0, )",
+          "Microsoft.Extensions.Logging.Abstractions": "[9.0.22, )",
+          "SoftProof.Core": "[0.1.0-preview, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
       },
       "softproof.core": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
+          "Microsoft.Extensions.Logging.Abstractions": "[9.0.22, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
       },
       "softproof.ripparsers": {
         "type": "Project",
         "dependencies": {
-          "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
+          "Microsoft.Extensions.Logging.Abstractions": "[9.0.22, )",
           "SixLabors.ImageSharp": "[3.1.11, )",
-          "SoftProof.Core": "[1.0.0, )",
+          "SoftProof.Core": "[0.1.0-preview, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
-      }
-    },
-    "net8.0-windows7.0/win-x64": {
-      "Microsoft.Win32.SystemEvents": {
-        "type": "Transitive",
-        "resolved": "8.0.0",
-        "contentHash": "9opKRyOKMCi2xJ7Bj7kxtZ1r9vbzosMvRrdEhVhDz8j8MoBGgB+WmC94yH839NPH+BclAjtQ/pyagvi/8gDLkw=="
       }
     }
   }
