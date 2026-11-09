@@ -7,7 +7,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SoftProof.Core\SoftProof.Core.csproj" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.22" />
   </ItemGroup>
 
   <!-- LittleCMS native library. Copied to the ROOT of every consuming app's output folder
