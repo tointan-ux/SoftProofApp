@@ -39,9 +39,9 @@
       },
       "WriteableBitmapEx": {
         "type": "Direct",
-        "requested": "[1.6.8, )",
-        "resolved": "1.6.8",
-        "contentHash": "DmMeRt3Zr+xu21U9uY9baniMlX86nSKRBoUvFXZilsk553Him37OX04nE2ctJtPHONbVD/iB1dsIfQx+r1LH0Q=="
+        "requested": "[1.6.11, )",
+        "resolved": "1.6.11",
+        "contentHash": "TRMqFpjSW4Fw29h2SFMURPYY9eLO28nwA75G9Pnx/ejZt8l9d9bPi7Ewu9Leatv5f6VF3AxtAEsJg9jlBAhdOg=="
       },
       "Microsoft.Build.Tasks.Git": {
         "type": "Transitive",
