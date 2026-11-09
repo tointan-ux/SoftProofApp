@@ -10,6 +10,6 @@
          removed: 3.1.x carries six advisories (four high severity) and 3.2+ requires a paid
          Six Labors licence, so the decoder dependency was not worth keeping for one code path. -->
     <PackageReference Include="System.Drawing.Common" Version="8.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.22" />
   </ItemGroup>
 </Project>
