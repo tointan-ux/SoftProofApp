@@ -1,4 +1,12 @@
-- name: Docs
-  href: docs/
-- name: API
-  href: api/
+- name: Overview
+  href: index.md
+- name: Getting Started
+  href: docs/getting-started.md
+- name: Introduction
+  href: docs/introduction.md
+- name: Packaging
+  href: docs/packaging.md
+- name: LittleCMS requirements
+  href: docs/lcms2-requirements.md
+- name: README
+  href: README.md

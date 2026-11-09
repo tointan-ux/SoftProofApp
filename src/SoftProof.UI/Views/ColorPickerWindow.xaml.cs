@@ -15,10 +15,16 @@ public partial class ColorPickerWindow : Window
 
     public Color SelectedColor { get; private set; }
 
-    public ColorPickerWindow(Color initial)
+    /// <summary>True when the plate should composite as opaque white ink instead of a tint.</summary>
+    public bool SelectedOpaqueWhite { get; private set; }
+
+    /// <summary>Builds the dialog with an initial tint and, optionally, opaque-white already set.</summary>
+    public ColorPickerWindow(Color initial, bool opaqueWhite = false)
     {
         InitializeComponent();
+        OpaqueWhiteBox.IsChecked = opaqueWhite;
         SetColor(initial);
+        UpdateOpaqueState();
 
         Loaded += (_, _) =>
         {
@@ -42,7 +48,7 @@ public partial class ColorPickerWindow : Window
         {
             var color = HsvToColor(_h, _s, _v);
             SvHueLayer.Background = new SolidColorBrush(HsvToColor(_h, 1, 1));
-            Preview.Background = new SolidColorBrush(color);
+            UpdatePreview();
 
             if (updateHex)
                 HexBox.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
@@ -183,9 +189,27 @@ public partial class ColorPickerWindow : Window
             SetColor(picked);
     }
 
+    /// <summary>Opaque white replaces the tint, so the colour controls are switched off while it is on.</summary>
+    private void UpdateOpaqueState()
+    {
+        var opaque = OpaqueWhiteBox.IsChecked == true;
+        ColorControls.IsEnabled = !opaque;
+        EyedropperButton.IsEnabled = !opaque;
+        UpdatePreview();
+    }
+
+    private void UpdatePreview()
+    {
+        var opaque = OpaqueWhiteBox.IsChecked == true;
+        Preview.Background = new SolidColorBrush(opaque ? Colors.White : HsvToColor(_h, _s, _v));
+    }
+
+    private void OpaqueWhite_Changed(object sender, RoutedEventArgs e) => UpdateOpaqueState();
+
     private void Apply_Click(object sender, RoutedEventArgs e)
     {
-        SelectedColor = HsvToColor(_h, _s, _v);
+        SelectedOpaqueWhite = OpaqueWhiteBox.IsChecked == true;
+        SelectedColor = SelectedOpaqueWhite ? Colors.White : HsvToColor(_h, _s, _v);
         DialogResult = true;
     }
 

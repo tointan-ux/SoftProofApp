@@ -144,7 +144,7 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ToggleButton">
-                    <Border x:Name="Bd" Background="Transparent" CornerRadius="5" Padding="10,6">
+                    <Border x:Name="Bd" Background="Transparent" CornerRadius="5" Padding="6,6">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
                     <ControlTemplate.Triggers>

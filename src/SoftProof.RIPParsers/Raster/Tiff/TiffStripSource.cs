@@ -360,6 +360,13 @@ public sealed class TiffStripSource : IPlateSource
         var length = (long)rows * rowBytes;
         if (length > int.MaxValue)
             throw new PlateSourceException("Decoded strip is too large for one buffer; reduce RowsPerStrip.");
+        // The strip cache budget is applied after allocation, and its eviction loop can never
+        // evict a single oversized strip, so cap the decode itself.
+        if (length > TiffReader.MaxBlockBytes)
+            throw new PlateSourceException(
+                $"Strip of rows {rows} x {rowBytes} bytes is over the " +
+                $"{TiffReader.MaxBlockBytes / (1024 * 1024)} MB per-strip limit; " +
+                "the file's RowsPerStrip looks corrupt.");
 
         var target = new byte[length];
         var payload = ReadAt(_offsets[index], _counts[index]);

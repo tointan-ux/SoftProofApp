@@ -557,8 +557,10 @@ public static class PreflightAnalyzer
         if (allResults.Count == 0)
             return new(title, "No dieline plates detected.", PreflightStatus.NotRun);
 
-        var failed = allResults.Where(r => !r.KnockoutPass || !r.OverprintPass).ToList();
-        var passed = allResults.Where(r => r.KnockoutPass && r.OverprintPass).ToList();
+        // OverprintPass is null when that half of the check did not run. Reporting those as a
+        // pass is how half a check silently becomes a green tick.
+        var failed = allResults.Where(r => !r.KnockoutPass || r.OverprintPass == false).ToList();
+        var unevaluated = allResults.Where(r => r.OverprintPass is null).ToList();
 
         var detailParts = new List<string>();
         if (failed.Count > 0)
@@ -567,21 +569,30 @@ public static class PreflightAnalyzer
             foreach (var r in failed)
             {
                 var issues = new List<string>();
-                if (!r.KnockoutPass) issues.Add($"ink under dieline {r.InkUnderDielinePercent:0.00}% > {settings.DielineMaxInkUnderPercent:0.##}%");
-                if (!r.OverprintPass) issues.Add("overprint issue");
+                if (!r.KnockoutPass)
+                    issues.Add($"ink under dieline {r.InkUnderDielinePercent:0.00}% " +
+                               $"(limit {settings.DielineMaxInkUnderPercent:0.##}%, " +
+                               $"max density {r.MaxInkDensityUnderDieline:0} of " +
+                               $"{settings.DielineMaxInkDensityUnderDieline})");
+                if (r.OverprintPass == false) issues.Add("overprint issue");
                 detailParts.Add($"  {r.DielinePlateName} ({r.DielineType}): {string.Join(", ", issues)}");
             }
         }
 
-        if (passed.Count > 0)
-        {
-            detailParts.Add($"PASS: {passed.Count} dieline(s) meet knockout/overprint requirements.");
-        }
+        var passedCount = allResults.Count - failed.Count;
+        if (passedCount > 0)
+            detailParts.Add($"PASS: {passedCount} dieline(s) meet knockout requirements.");
+
+        if (unevaluated.Count > 0)
+            detailParts.Add(
+                $"Varnish/white overprint not evaluated for {unevaluated.Count} dieline(s).");
 
         var detail = string.Join(" ", detailParts);
-        var status = failed.Count > 0 ? PreflightStatus.Fail : PreflightStatus.Pass;
+        var status = failed.Count > 0 ? PreflightStatus.Fail
+                   : unevaluated.Count > 0 ? PreflightStatus.Warning
+                   : PreflightStatus.Pass;
 
-        var focus = failed.Count > 0 ? failed.First().Focus : passed.FirstOrDefault()?.Focus;
+        var focus = failed.Count > 0 ? failed.First().Focus : allResults.FirstOrDefault()?.Focus;
 
         return new(title, detail, status) { Focus = focus };
     }

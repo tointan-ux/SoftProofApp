@@ -28,7 +28,6 @@ public partial class MainViewModel : ObservableObject
     private readonly IFileDialogService _fileDialogs;
     private readonly IColorEngine _colorEngine;
     private readonly InverseDotGainTool _idgTool;
-    private readonly DensitometerTool _densitometer;
     private readonly ColorMeasurementTool _colorMeasurement;
     private readonly IPlateLoader _plateLoader;
     private readonly PyramidCache _pyramidCache;
@@ -88,9 +87,6 @@ public partial class MainViewModel : ObservableObject
     private string _viewScaleText = "—";
 
     [ObservableProperty]
-    private bool _showOriginalPixels;
-
-    [ObservableProperty]
     private bool _showContentOverlay;
 
         [ObservableProperty]
@@ -101,24 +97,6 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty]
     private Color _substrateColor = Colors.White;
-
-    [ObservableProperty]
-    private double _backSideOpacity;
-
-    [ObservableProperty]
-    private string _orientationText = "0°";
-
-    [ObservableProperty]
-    private int _rotationDegrees;
-
-    [ObservableProperty]
-    private bool _isFlipHorizontal;
-
-    [ObservableProperty]
-    private bool _isFlipVertical;
-
-    [ObservableProperty]
-    private string _viewTransformText = "none";
 
     /// <summary>Segmented control needs both sides of the substrate choice as bindable booleans.</summary>
     public bool OpaquePaper
@@ -162,37 +140,6 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(SubstrateRgb));
         OnPropertyChanged(nameof(SubstrateBrush));
     }
-
-    partial void OnRotationDegreesChanged(int value)
-    {
-        OnPropertyChanged(nameof(IsRotation0));
-        OnPropertyChanged(nameof(IsRotation90));
-        OnPropertyChanged(nameof(IsRotation180));
-        OnPropertyChanged(nameof(IsRotation270));
-    }
-
-    public bool IsRotation0 => RotationDegrees == 0;
-    public bool IsRotation90 => RotationDegrees == 90;
-    public bool IsRotation180 => RotationDegrees == 180;
-    public bool IsRotation270 => RotationDegrees == 270;
-
-    /// <summary>Orientation commands are executed by the window, which owns the viewer.</summary>
-    public event EventHandler<string>? ViewCommandRequested;
-
-    [RelayCommand]
-    private void RotateView() => ViewCommandRequested?.Invoke(this, "rotate");
-
-    [RelayCommand]
-    private void FlipHorizontal() => ViewCommandRequested?.Invoke(this, "fliph");
-
-    [RelayCommand]
-    private void FlipVertical() => ViewCommandRequested?.Invoke(this, "flipv");
-
-    [RelayCommand]
-    private void ResetOrientation() => ViewCommandRequested?.Invoke(this, "reset");
-
-    [RelayCommand]
-    private void RotateTo(string degrees) => ViewCommandRequested?.Invoke(this, "rotate:" + degrees);
 
     /// <summary>Status text with both numbers: native plate resolution and current view scale.</summary>
     public void UpdateViewScale(double nativeZoom, int factor, int level = 0, bool nativePixels = false)
@@ -386,7 +333,6 @@ public partial class MainViewModel : ObservableObject
         IFileDialogService fileDialogs,
         IColorEngine colorEngine,
         InverseDotGainTool idgTool,
-        DensitometerTool densitometer,
         ColorMeasurementTool colorMeasurement,
         IPlateLoader plateLoader,
         PyramidCache pyramidCache)
@@ -395,7 +341,6 @@ public partial class MainViewModel : ObservableObject
         _fileDialogs = fileDialogs;
         _colorEngine = colorEngine;
         _idgTool = idgTool;
-        _densitometer = densitometer;
         _colorMeasurement = colorMeasurement;
         _plateLoader = plateLoader;
         _pyramidCache = pyramidCache;
@@ -629,30 +574,6 @@ public partial class MainViewModel : ObservableObject
     }
     
     [RelayCommand]
-    private void MeasureDensity()
-    {
-        if (CurrentJob == null) return;
-        
-        // Get measurement region from viewer (center 10x10mm)
-        var region = new MeasurementRegion
-        {
-            X = SyntheticProbeSize / 2 - 500,
-            Y = SyntheticProbeSize / 2 - 500,
-            Width = 1000,
-            Height = 1000,
-            Name = "Center"
-        };
-        
-        var sep = CurrentJob.Separations.FirstOrDefault(s => s.Color == ActiveSeparation);
-        if (sep == null) return;
-        
-        var testData = GenerateTestSeparationData(SyntheticProbeSize, SyntheticProbeSize);
-        LastMeasurement = _densitometer.MeasureDensity(testData, SyntheticProbeSize, SyntheticProbeSize, region);
-        
-        StatusText = $"Density: {LastMeasurement.Density:F3}";
-    }
-    
-    [RelayCommand]
     private void FitToWindow()
     {
         FitToWindowRequested?.Invoke(this, EventArgs.Empty);
@@ -669,6 +590,41 @@ public partial class MainViewModel : ObservableObject
     
     [RelayCommand]
     private void ZoomToDots() => RequestZoom(16.0);
+
+    /// <summary>Canvas rotation in degrees (0/90/180/270).</summary>
+    [ObservableProperty]
+    private int _rotationDegrees;
+
+    partial void OnRotationDegreesChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsRotation0));
+        OnPropertyChanged(nameof(IsRotation90));
+        OnPropertyChanged(nameof(IsRotation180));
+        OnPropertyChanged(nameof(IsRotation270));
+        OnPropertyChanged(nameof(RotationText));
+    }
+
+    /// <summary>True when the canvas is unrotated.</summary>
+    public bool IsRotation0 => RotationDegrees == 0;
+
+    /// <summary>True when the canvas is turned 90° clockwise.</summary>
+    public bool IsRotation90 => RotationDegrees == 90;
+
+    /// <summary>True when the canvas is turned 180°.</summary>
+    public bool IsRotation180 => RotationDegrees == 180;
+
+    /// <summary>True when the canvas is turned 270° clockwise.</summary>
+    public bool IsRotation270 => RotationDegrees == 270;
+
+    /// <summary>Label on the canvas rotation button.</summary>
+    public string RotationText => $"{RotationDegrees}°";
+
+    /// <summary>Rotation is applied by the window, which owns the viewer.</summary>
+    public event EventHandler<string>? ViewCommandRequested;
+
+    /// <summary>Asks the window to rotate the canvas to <paramref name="degrees"/>.</summary>
+    [RelayCommand]
+    private void RotateTo(string degrees) => ViewCommandRequested?.Invoke(this, "rotate:" + degrees);
     
     [RelayCommand]
     private void ShowProofSettings()

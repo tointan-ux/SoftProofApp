@@ -28,12 +28,6 @@
           "Microsoft.SourceLink.Common": "8.0.0"
         }
       },
-      "SixLabors.ImageSharp": {
-        "type": "Direct",
-        "requested": "[3.1.11, )",
-        "resolved": "3.1.11",
-        "contentHash": "JfPLyigLthuE50yi6tMt7Amrenr/fA31t2CvJyhy/kQmfulIBAqo5T/YFUSRHtuYPXRSaUHygFeh6Qd933EoSw=="
-      },
       "System.Drawing.Common": {
         "type": "Direct",
         "requested": "[8.0.5, )",
@@ -74,13 +68,6 @@
           "Microsoft.Extensions.Logging.Abstractions": "[8.0.5, )",
           "System.Drawing.Common": "[8.0.5, )"
         }
-      }
-    },
-    "net8.0-windows7.0/win-x64": {
-      "Microsoft.Win32.SystemEvents": {
-        "type": "Transitive",
-        "resolved": "8.0.0",
-        "contentHash": "9opKRyOKMCi2xJ7Bj7kxtZ1r9vbzosMvRrdEhVhDz8j8MoBGgB+WmC94yH839NPH+BclAjtQ/pyagvi/8gDLkw=="
       }
     }
   }

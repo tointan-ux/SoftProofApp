@@ -53,12 +53,19 @@ public enum JobStatus
 /// </summary>
 public class JobMetadata
 {
+    /// <summary>
+    /// Resolution assumed when a RIP file does not state one. Named so the fallback is visible
+    /// and testable instead of being scattered as a literal.
+    /// </summary>
+    public const int FallbackResolution = 2400;
+
     public string RipName { get; set; } = string.Empty;
     public string RipVersion { get; set; } = string.Empty;
     public string PressName { get; set; } = string.Empty;
     public int Width { get; set; }
     public int Height { get; set; }
-    public int Resolution { get; set; } = 2400; // DPI
+    /// <summary>Plate resolution in dots per inch; drives every physical measurement.</summary>
+    public int Resolution { get; set; } = FallbackResolution; // DPI
     public int BitDepth { get; set; } = 1;
     public ColorSpace ColorSpace { get; set; } = ColorSpace.CMYK;
     public List<string> SeparationNames { get; set; } = new();
@@ -302,7 +309,13 @@ public class MeasurementResult
     public float[] CMYK { get; set; } = new float[4];
     public float DeltaE { get; set; }
     public float DeltaE2000 { get; set; }
-    public float DotGain { get; set; }
+    /// <summary>Measured ink fraction in percent (the "dot area" a densitometer reports).</summary>
+    public float DotArea { get; set; }
+    /// <summary>
+    /// Dot gain in percent (measured tint minus requested file tint), or <c>null</c> when the
+    /// requested tint is unknown. Null rather than 0: "no gain" and "not measured" differ.
+    /// </summary>
+    public float? DotGain { get; set; }
     public float PrintContrast { get; set; }
     public float HueError { get; set; }
     public float Grayness { get; set; }

@@ -81,6 +81,11 @@
                         <MenuItem Header="Zoom _In" Command="{Binding ZoomInCommand}" InputGestureText="Ctrl++" />
                         <MenuItem Header="Zoom _Out" Command="{Binding ZoomOutCommand}" InputGestureText="Ctrl+-" />
                         <Separator />
+                        <MenuItem Header="Rotate canvas 90°" Command="{Binding RotateToCommand}"
+                                  CommandParameter="90" InputGestureText="R" />
+                        <MenuItem Header="Reset rotation" Command="{Binding RotateToCommand}"
+                                  CommandParameter="0" />
+                        <Separator />
                         <MenuItem Header="Side-by-side _Compare" Command="{Binding ToggleCompareCommand}" />
                     </MenuItem>
                     <MenuItem Header="S_eparations">
@@ -180,8 +185,8 @@
                     <Button Style="{StaticResource SpToolButton}" Command="{Binding FitToWindowCommand}" ToolTip="Fit to window (Ctrl+0)">
                         <materialDesign:PackIcon Kind="Fullscreen" Width="16" Height="16" />
                     </Button>
-                    <Button Style="{StaticResource SpToolButton}" Command="{Binding ZoomActualSizeCommand}" ToolTip="Actual size (1)">
-                        <TextBlock Text="1:1" FontFamily="Consolas" />
+                    <Button Style="{StaticResource SpToolButton}" Command="{Binding ZoomActualSizeCommand}" ToolTip="100% — one plate pixel per screen pixel (1)">
+                        <TextBlock Text="100%" FontFamily="Consolas" />
                     </Button>
                     <Button Style="{StaticResource SpToolButton}" Command="{Binding ZoomOutCommand}" ToolTip="Zoom out">
                         <materialDesign:PackIcon Kind="MagnifyMinus" Width="16" Height="16" />
@@ -193,17 +198,39 @@
                             <materialDesign:PackIcon Kind="ChevronDown" Width="14" Height="14" Margin="4,1,0,0" />
                         </StackPanel>
                         <Button.ContextMenu>
-                            <ContextMenu>
+                            <ContextMenu Opened="ZoomMenu_Opened">
+                                <MenuItem Header="Fit to window" Command="{Binding FitToWindowCommand}"
+                                          InputGestureText="Ctrl+0" />
+                                <Separator />
                                 <MenuItem Header="12%" Tag="0.125" Click="ZoomPreset_Click" />
                                 <MenuItem Header="25%" Tag="0.25" Click="ZoomPreset_Click" />
                                 <MenuItem Header="50%" Tag="0.5" Click="ZoomPreset_Click" />
-                                <MenuItem Header="100%" Tag="1" Click="ZoomPreset_Click" />
-                                <MenuItem Header="200%" Tag="2" Click="ZoomPreset_Click" />
+                                <MenuItem Header="75%" Tag="0.75" Click="ZoomPreset_Click" />
+                                <MenuItem Header="100% (native)" Tag="1" Click="ZoomPreset_Click" />
                             </ContextMenu>
                         </Button.ContextMenu>
                     </Button>
                     <Button Style="{StaticResource SpToolButton}" Command="{Binding ZoomInCommand}" ToolTip="Zoom in">
                         <materialDesign:PackIcon Kind="MagnifyPlus" Width="16" Height="16" />
+                    </Button>
+
+                    <Border Width="1" Height="20" Margin="10,0" Background="{StaticResource SpBorder}" />
+
+                    <Button x:Name="RotateButton" Style="{StaticResource SpToolButton}" MinWidth="58"
+                            Click="RotateButton_Click" ToolTip="Canvas rotation (R cycles 90°)">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="RotateRight" Width="15" Height="15" />
+                            <TextBlock Text="{Binding RotationText}" FontFamily="Consolas" Margin="4,0,0,0" />
+                            <materialDesign:PackIcon Kind="ChevronDown" Width="14" Height="14" Margin="2,1,0,0" />
+                        </StackPanel>
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="0°" Tag="0" Click="RotatePreset_Click" />
+                                <MenuItem Header="90° clockwise" Tag="90" Click="RotatePreset_Click" />
+                                <MenuItem Header="180°" Tag="180" Click="RotatePreset_Click" />
+                                <MenuItem Header="270° clockwise" Tag="270" Click="RotatePreset_Click" />
+                            </ContextMenu>
+                        </Button.ContextMenu>
                     </Button>
                 </StackPanel>
 
@@ -215,13 +242,6 @@
                         <StackPanel Orientation="Horizontal">
                             <materialDesign:PackIcon Kind="Compare" Width="16" Height="16" />
                             <TextBlock Text="Side-by-side" Margin="6,0,0,0" />
-                        </StackPanel>
-                    </ToggleButton>
-                    <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowOriginalPixels}"
-                                  ToolTip="Zoom to 100% of the plate and stream native pixels">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="MagnifyPlus" Width="16" Height="16" />
-                            <TextBlock Text="1:1 native" Margin="6,0,0,0" />
                         </StackPanel>
                     </ToggleButton>
                     <ToggleButton Style="{StaticResource SpToolToggle}" IsChecked="{Binding ShowContentOverlay}"
@@ -697,8 +717,14 @@
                                                 </StackPanel>
                                                 <ToggleButton Grid.Column="3" Content="S" Style="{StaticResource SpChipToggle}" Margin="0,0,4,0"
                                                               IsChecked="{Binding IsSolo}" IsEnabled="{Binding HasLayer}" ToolTip="Solo this plate" />
-                                                <ToggleButton Grid.Column="4" Content="Inv" Style="{StaticResource SpChipToggle}"
-                                                              IsChecked="{Binding IsInverted}" IsEnabled="{Binding HasLayer}" ToolTip="Invert (negative) view of this plate" />
+                                                <StackPanel Grid.Column="4" Orientation="Horizontal">
+                                                    <ToggleButton Content="H" Style="{StaticResource SpChipToggle}" Margin="0,0,4,0"
+                                                                  IsChecked="{Binding IsFlipHorizontal}" IsEnabled="{Binding HasLayer}"
+                                                                  ToolTip="Mirror this plate left to right" />
+                                                    <ToggleButton Content="V" Style="{StaticResource SpChipToggle}"
+                                                                  IsChecked="{Binding IsFlipVertical}" IsEnabled="{Binding HasLayer}"
+                                                                  ToolTip="Mirror this plate top to bottom" />
+                                                </StackPanel>
                                             </Grid>
 
                                             <Grid Grid.Row="1" Margin="0,10,0,0">
@@ -735,10 +761,10 @@
                             </ItemsControl.ItemTemplate>
                             </ItemsControl>
 
-                            <!-- Simulation & orientation -->
+                            <!-- Simulation -->
                             <Expander IsExpanded="{Binding ShowSimulationSection, Mode=TwoWay}" Margin="0,0,6,10">
                                 <Expander.Header>
-                                    <TextBlock Text="SIMULATION &amp; ORIENTATION" FontSize="10" FontWeight="Bold"
+                                    <TextBlock Text="SIMULATION" FontSize="10" FontWeight="Bold"
                                                Style="{StaticResource SpMuted}" />
                                 </Expander.Header>
                                 <Border Background="{StaticResource SpCardBg}" BorderBrush="{StaticResource SpBorder}"
@@ -770,54 +796,6 @@
                                                 Padding="8,3" FontSize="11"
                                                 IsEnabled="{Binding UseCustomSubstrate}" />
                                     </StackPanel>
-
-                                    <TextBlock Text="Rotate" FontSize="11" Foreground="{StaticResource SpTextMuted}"
-                                               Margin="0,10,0,4" />
-                                    <Border Background="{StaticResource SpBorder}" CornerRadius="6" Padding="2">
-                                        <UniformGrid Columns="4">
-                                            <RadioButton GroupName="Rotation" Content="0°" Style="{StaticResource SpSegmentTab}"
-                                                         IsChecked="{Binding IsRotation0, Mode=OneWay}"
-                                                         Command="{Binding RotateToCommand}" CommandParameter="0" />
-                                            <RadioButton GroupName="Rotation" Content="90°" Style="{StaticResource SpSegmentTab}"
-                                                         IsChecked="{Binding IsRotation90, Mode=OneWay}"
-                                                         Command="{Binding RotateToCommand}" CommandParameter="90" />
-                                            <RadioButton GroupName="Rotation" Content="180°" Style="{StaticResource SpSegmentTab}"
-                                                         IsChecked="{Binding IsRotation180, Mode=OneWay}"
-                                                         Command="{Binding RotateToCommand}" CommandParameter="180" />
-                                            <RadioButton GroupName="Rotation" Content="270°" Style="{StaticResource SpSegmentTab}"
-                                                         IsChecked="{Binding IsRotation270, Mode=OneWay}"
-                                                         Command="{Binding RotateToCommand}" CommandParameter="270" />
-                                        </UniformGrid>
-                                    </Border>
-
-                                    <UniformGrid Columns="2" Margin="0,8,0,0">
-                                        <ToggleButton Content="Flip H" Margin="0,0,3,0" Padding="6,2" FontSize="11"
-                                                      IsChecked="{Binding IsFlipHorizontal, Mode=OneWay}"
-                                                      Command="{Binding FlipHorizontalCommand}"
-                                                      ToolTip="Mirror the plate left to right" />
-                                        <ToggleButton Content="Flip V" Margin="3,0,0,0" Padding="6,2" FontSize="11"
-                                                      IsChecked="{Binding IsFlipVertical, Mode=OneWay}"
-                                                      Command="{Binding FlipVerticalCommand}"
-                                                      ToolTip="Mirror the plate top to bottom" />
-                                    </UniformGrid>
-
-                                    <DockPanel Margin="0,8,0,0">
-                                        <Button Content="Reset orientation" Command="{Binding ResetOrientationCommand}"
-                                                Background="Transparent" BorderThickness="0" Padding="0"
-                                                HorizontalAlignment="Left" FontSize="11"
-                                                Foreground="{StaticResource SpAccentText}"
-                                                ToolTip="Clear rotation and both flips" />
-                                        <TextBlock Text="{Binding ViewTransformText}" DockPanel.Dock="Right"
-                                                   Style="{StaticResource SpMuted}" FontSize="10"
-                                                   VerticalAlignment="Center" />
-                                    </DockPanel>
-
-                                    <TextBlock Text="Back side opacity" FontSize="11" Foreground="{StaticResource SpTextMuted}"
-                                               Margin="0,10,0,2" />
-                                    <Slider Minimum="0" Maximum="1" Value="{Binding BackSideOpacity}"
-                                            ToolTip="Mirror the back side over the front to check registration and bleed-through" />
-                                    <TextBlock Text="{Binding BackSideOpacity, StringFormat=Back {0:P0}}"
-                                               Style="{StaticResource SpMono}" FontSize="10" />
                                     </StackPanel>
                                 </Border>
                             </Expander>

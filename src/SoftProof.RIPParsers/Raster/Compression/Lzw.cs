@@ -16,12 +16,27 @@ public static class Lzw
     public const int MaxCode = 4096;
     public const int MaxCodeWidth = 12;
 
+    /// <summary>
+    /// Absolute ceiling on one decoded strip when the caller does not know its length.
+    /// Matches <c>TiffReader.MaxBlockBytes</c>; a real strip is far smaller.
+    /// </summary>
+    public const long MaxOutputBytes = 64L * 1024 * 1024;
+
     /// <summary>Decodes a TIFF LZW strip.</summary>
     /// <param name="expectedLength">Uncompressed strip length; output is padded/truncated to it (0 = as decoded).</param>
     public static byte[] Decode(ReadOnlySpan<byte> source, int expectedLength = 0)
     {
         var bits = new MsbBitReader(source);
-        var output = new List<byte>(expectedLength > 0 ? expectedLength : source.Length * 3);
+
+        // Output is bounded. A run of maximum-length codes expands ~2,560:1, so an uncapped
+        // decoder turns a 1 MB strip into gigabytes of ArrayPool-hostile growth. The strip's
+        // real length is known when expectedLength > 0; otherwise fall back to a multiple of
+        // the input, still under an absolute ceiling.
+        var cap = expectedLength > 0
+            ? expectedLength
+            : Math.Min(MaxOutputBytes, Math.Max(source.Length * 64L, 1 << 20));
+
+        var output = new List<byte>((int)Math.Min(cap, expectedLength > 0 ? expectedLength : 1 << 20));
 
         // Dictionary of byte strings; index = code.
         var prefix = new int[MaxCode];
@@ -45,7 +60,8 @@ public static class Lzw
         var previous = -1;
         ResetTable();
 
-        void Emit(int code)
+        // Returns false once the output budget is exhausted; the caller stops decoding.
+        bool Emit(int code)
         {
             var bytes = new byte[length[code]];
             var c = code;
@@ -54,7 +70,12 @@ public static class Lzw
                 bytes[i] = suffix[c];
                 c = prefix[c];
             }
+
+            if (output.Count + (long)bytes.Length > cap)
+                return false;
+
             output.AddRange(bytes);
+            return true;
         }
 
         while (true)
@@ -84,7 +105,8 @@ public static class Lzw
             {
                 if (code >= 256)
                     throw new PbfFormatException($"LZW stream starts with non-literal code {code}.");
-                Emit(code);
+                if (!Emit(code))
+                    break;
                 previous = code;
                 continue;
             }
@@ -117,7 +139,8 @@ public static class Lzw
                 break;
             }
 
-            Emit(entryCode);
+            if (!Emit(entryCode))
+                break;
 
             // Add previous + first byte of entry. The KwKwK branch already inserted it above;
             // inserting again would desynchronise every following code (and the code width).

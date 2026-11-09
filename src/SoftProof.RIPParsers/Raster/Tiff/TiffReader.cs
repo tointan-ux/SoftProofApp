@@ -28,8 +28,11 @@ public static class TiffReader
     private const ushort TagSamplesPerPixel = 277;
     private const ushort TagRowsPerStrip = 278;
     private const ushort TagStripByteCounts = 279;
+    private const ushort TagXResolution = 282;
+    private const ushort TagYResolution = 283;
     private const ushort TagPlanarConfiguration = 284;
     private const ushort TagPageName = 285;
+    private const ushort TagResolutionUnit = 296;
     private const ushort TagPredictor = 317;
     private const ushort TagTileWidth = 322;
     private const ushort TagTileLength = 323;
@@ -98,6 +101,7 @@ public static class TiffReader
         var height = (int)First(tags, TagImageLength, 0);
         if (width <= 0 || height <= 0)
             throw new PbfFormatException($"TIFF page {pageIndex} has invalid dimensions {width}x{height}.");
+        ValidateDimensions(width, height);
 
         var samples = (int)First(tags, TagSamplesPerPixel, 1);
         if (samples is < 1 or > 8)
@@ -160,6 +164,14 @@ public static class TiffReader
                 "use a Group 4 plate (decoded with downsampling) or export a smaller raster.");
         }
 
+        // The pixel budget counts pixels, but `planes` allocates samples x pixels. Checked here,
+        // after the Group 4 branch, so a G4 page keeps its "use ReadG4Coverage" message.
+        var planeBytes = (long)width * height * samples;
+        if (planeBytes > MaxPixelsPerPage * 2L)
+            throw new PbfFormatException(
+                $"TIFF page is {width} x {height} px with {samples} samples ({planeBytes:N0} bytes); " +
+                "too large to decode at full resolution.");
+
         var planes = new byte[samples][];
         for (var s = 0; s < samples; s++)
             planes[s] = new byte[(long)width * height];
@@ -182,16 +194,61 @@ public static class TiffReader
     /// <summary>Full-resolution decode budget per page (one byte of coverage per pixel).</summary>
     public const long MaxPixelsPerPage = 250_000_000;
 
-    /// <summary>Header facts about one page, without decoding any pixels.</summary>
+    /// <summary>
+    /// Largest accepted page dimension. Real plates are far narrower than this; a corrupt or
+    /// hostile header is not, and every buffer downstream is sized from these two numbers.
+    /// </summary>
+    public const int MaxDimension = 1_000_000;
+
+    /// <summary>
+    /// Ceiling for one decoded strip/tile block. Without it a header field
+    /// (e.g. TileLength = 17,000) can size a multi-gigabyte allocation from a tiny file.
+    /// </summary>
+    public const long MaxBlockBytes = 64L * 1024 * 1024;
+
+    // Decoded tag payloads per IFD, and the entry count of one IFD. Both are header-driven and
+    // were previously unbounded (65,535 entries x 1 M values each is ~262 GB).
+    private const long MaxIfdTagBytes = 16L * 1024 * 1024;
+    private const int MaxIfdEntries = 4096;
+
+    private static void ValidateDimensions(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            throw new PbfFormatException($"TIFF has invalid dimensions {width}x{height}.");
+        if (width > MaxDimension || height > MaxDimension)
+            throw new PbfFormatException(
+                $"TIFF dimension {width}x{height} exceeds the {MaxDimension:N0} px limit; " +
+                "the header looks corrupt.");
+    }
+
+    private static void ValidateBlockSize(long bytes, string what)
+    {
+        if (bytes < 0 || bytes > MaxBlockBytes)
+            throw new PbfFormatException(
+                $"TIFF {what} block claims {bytes:N0} bytes, over the " +
+                $"{MaxBlockBytes / (1024 * 1024)} MB per-block limit; the header looks corrupt.");
+    }
+
+    /// <summary>
+    /// Header facts about one page, without decoding any pixels.
+    /// <para>
+    /// <see cref="Dpi"/> is 0 when the file carries no usable resolution tag, so callers can
+    /// tell "unknown" apart from a real 0 and apply their own fallback.
+    /// </para>
+    /// </summary>
     public readonly record struct TiffInfo(int Width, int Height, int BitsPerSample,
-                                           int SamplesPerPixel, int Compression, int Photometric);
+                                           int SamplesPerPixel, int Compression, int Photometric,
+                                           int Dpi = 0);
 
     public static TiffInfo GetInfo(string path, int pageIndex = 0)
     {
         var bytes = File.ReadAllBytes(path);
         var (littleEndian, firstIfd) = ReadTiffHeader(bytes);
-        var tags = ReadIfdAt(bytes, firstIfd, pageIndex, littleEndian)
-                   ?? throw new PbfFormatException($"TIFF has no page {pageIndex}.");
+        var ifdOffset = FindIfdOffset(bytes, firstIfd, pageIndex, littleEndian);
+        if (ifdOffset <= 0)
+            throw new PbfFormatException($"TIFF has no page {pageIndex}.");
+
+        var (tags, _) = ReadIfd(bytes, ifdOffset, littleEndian);
 
         return new TiffInfo(
             (int)First(tags, TagImageWidth, 0),
@@ -199,7 +256,97 @@ public static class TiffReader
             (int)First(tags, TagBitsPerSample, 1),
             (int)First(tags, TagSamplesPerPixel, 1),
             (int)First(tags, TagCompression, 1),
-            (int)First(tags, TagPhotometric, 1));
+            (int)First(tags, TagPhotometric, 1),
+            ReadDpi(bytes, ifdOffset, tags, littleEndian));
+    }
+
+    /// <summary>
+    /// Offset of the requested IFD, or 0 when the file has fewer pages. Walks the next-IFD
+    /// chain once so callers can read both the tag table and the raw rational tags from it.
+    /// </summary>
+    private static int FindIfdOffset(ReadOnlySpan<byte> bytes, int firstIfd, int pageIndex,
+                                     bool littleEndian)
+    {
+        var offset = firstIfd;
+        for (var page = 0; page <= pageIndex; page++)
+        {
+            if (offset <= 0 || offset + 2 > bytes.Length)
+                return 0;
+
+            if (page == pageIndex)
+                return offset;
+
+            var (_, next) = ReadIfd(bytes, offset, littleEndian);
+            offset = next;
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// TIFF resolution in dots per inch (tags 282/283/296). Returns 0 when absent or unusable.
+    /// <para>
+    /// 282/283 are RATIONAL, so they are read here rather than through the tag table (which
+    /// keeps integer values only). ResolutionUnit 3 means centimetre, which is the one case
+    /// prepress files actually use; 1 ("no unit") and 2 are treated as inch.
+    /// </para>
+    /// </summary>
+    private static int ReadDpi(ReadOnlySpan<byte> bytes, int ifdOffset,
+                               Dictionary<ushort, uint[]> tags, bool littleEndian)
+    {
+        var unit = (int)First(tags, TagResolutionUnit, 2);
+        var x = ReadRationalTag(bytes, ifdOffset, TagXResolution, littleEndian);
+        var y = ReadRationalTag(bytes, ifdOffset, TagYResolution, littleEndian);
+        var value = Math.Max(x ?? 0, y ?? 0);
+        if (value <= 0)
+            return 0;
+
+        var dpi = unit == 3 ? value * 2.54 : value;
+        if (double.IsNaN(dpi) || dpi < 1 || dpi > 100_000)
+            return 0;
+
+        return (int)Math.Round(dpi);
+    }
+
+    /// <summary>Reads a single RATIONAL tag as a double, or null when the tag is absent.</summary>
+    private static double? ReadRationalTag(ReadOnlySpan<byte> bytes, int ifdOffset,
+                                           ushort wanted, bool littleEndian)
+    {
+        if (ifdOffset <= 0 || ifdOffset + 2 > bytes.Length)
+            return null;
+
+        var count = ReadU16(bytes, ifdOffset, littleEndian);
+        var entryBase = ifdOffset + 2;
+
+        for (var i = 0; i < count; i++)
+        {
+            var entry = entryBase + i * 12;
+            if (entry + 12 > bytes.Length)
+                return null;
+
+            if (ReadU16(bytes, entry, littleEndian) != wanted)
+                continue;
+
+            var type = ReadU16(bytes, entry + 2, littleEndian);
+            if (type is not (5 or 10)) // RATIONAL / SRATIONAL
+                return null;
+
+            var valueCount = ReadU32(bytes, entry + 4, littleEndian);
+            if (valueCount == 0)
+                return null;
+
+            var dataOffset = valueCount * 8 <= 4
+                ? entry + 8
+                : (int)ReadU32(bytes, entry + 8, littleEndian);
+
+            if (dataOffset < 0 || dataOffset + 8 > bytes.Length)
+                return null;
+
+            var numerator = ReadU32(bytes, dataOffset, littleEndian);
+            var denominator = ReadU32(bytes, dataOffset + 4, littleEndian);
+            return denominator == 0 ? null : (double)numerator / denominator;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -220,6 +367,8 @@ public static class TiffReader
         var samples = (int)First(tags, TagSamplesPerPixel, 1);
         var compression = (int)First(tags, TagCompression, 1);
         var photometric = (int)First(tags, TagPhotometric, 1);
+
+        ValidateDimensions(width, height);
 
         if (compression != 4)
             throw new PbfFormatException(
@@ -361,6 +510,8 @@ public static class TiffReader
         var compression = (int)First(tags, TagCompression, 1);
         var photometric = (int)First(tags, TagPhotometric, 1);
 
+        ValidateDimensions(width, height);
+
         if (bits != 1 || samples != 1)
             throw new PbfFormatException(
                 "Streaming downsample is only implemented for 1-bit single-sample plates.");
@@ -435,7 +586,9 @@ public static class TiffReader
                 break;
 
             var payload = SliceBlock(bytes, offsets[i], counts[i]);
-            var expected = rowBytes * rows;
+            var expectedLong = (long)rowBytes * rows;
+            ValidateBlockSize(expectedLong, "strip");
+            var expected = (int)expectedLong;
 
             var decoded = compression switch
             {
@@ -722,7 +875,10 @@ public static class TiffReader
                 $"TIFF declares {stripOffsets.Length} strips but {expectedStrips} are required " +
                 $"(planar={planar}, rowsPerStrip={rowsPerStrip}, height={height}, samples={samples}).");
 
-        for (var index = 0; index < stripOffsets.Length; index++)
+        // Only the strips the image actually uses: extra table entries would index past the
+        // planes (a corrupt file can declare thousands).
+        var blocks = Math.Min(stripOffsets.Length, expectedStrips);
+        for (var index = 0; index < blocks; index++)
         {
             var sample = planar == 2 ? index / stripsPerPlane : 0;
             var stripInPlane = planar == 2 ? index % stripsPerPlane : index;
@@ -732,8 +888,11 @@ public static class TiffReader
 
             var rows = Math.Min(rowsPerStrip, height - rowStart);
             var rowSamples = planar == 2 ? 1 : samples;
-            var rowBytes = (int)(((long)width * rowSamples * bitsPerSample + 7) / 8);
-            var expected = rowBytes * rows;
+            var rowBytesLong = ((long)width * rowSamples * bitsPerSample + 7) / 8;
+            var expectedLong = rowBytesLong * rows;
+            ValidateBlockSize(expectedLong, "strip");
+            var rowBytes = (int)rowBytesLong;
+            var expected = (int)expectedLong;
 
             var decoded = DecodeBlock(bytes, stripOffsets[index], stripByteCounts[index],
                                       compression, expected);
@@ -766,6 +925,12 @@ public static class TiffReader
         var tileHeight = (int)First(tags, TagTileLength, (uint)height);
         if (tileWidth <= 0 || tileHeight <= 0)
             throw new PbfFormatException($"TIFF has invalid tile size {tileWidth}x{tileHeight}.");
+        // A tile may legitimately be larger than the image (one tile covering everything), but
+        // not larger than any plausible plate: this is the number the block size is built from.
+        if (tileWidth > MaxDimension || tileHeight > MaxDimension)
+            throw new PbfFormatException(
+                $"TIFF tile {tileWidth}x{tileHeight} exceeds the {MaxDimension:N0} px limit; " +
+                "the header looks corrupt.");
 
         var offsets = ToIntArray(tags, TagTileOffsets);
         var counts = ToIntArray(tags, TagTileByteCounts);
@@ -773,9 +938,13 @@ public static class TiffReader
             throw new PbfFormatException(
                 $"TIFF tile table is incomplete ({offsets.Length} offsets, {counts.Length} byte counts).");
 
-        var across = (width + tileWidth - 1) / tileWidth;
-        var down = (height + tileHeight - 1) / tileHeight;
-        var tilesPerPlane = across * down;
+        var across = (int)(((long)width + tileWidth - 1) / tileWidth);
+        var down = (int)(((long)height + tileHeight - 1) / tileHeight);
+        var tilesPerPlane = (long)across * down;
+        if (tilesPerPlane > int.MaxValue)
+            throw new PbfFormatException(
+                $"TIFF tile grid {across}x{down} is implausible for a {width}x{height} image.");
+
         var expectedTiles = planar == 2 ? tilesPerPlane * samples : tilesPerPlane;
 
         if (offsets.Length < expectedTiles)
@@ -784,22 +953,31 @@ public static class TiffReader
 
         for (var index = 0; index < offsets.Length; index++)
         {
-            var sample = planar == 2 ? index / tilesPerPlane : 0;
-            var tileIndex = planar == 2 ? index % tilesPerPlane : index;
+            if (index >= expectedTiles)
+                break; // extra table entries would index past the planes
+
+            var sample = planar == 2 ? index / (int)tilesPerPlane : 0;
+            var tileIndex = planar == 2 ? index % (int)tilesPerPlane : index;
             var tileX = tileIndex % across;
             var tileY = tileIndex / across;
 
             var rowSamples = planar == 2 ? 1 : samples;
-            var rowBytes = (int)(((long)tileWidth * rowSamples * bitsPerSample + 7) / 8);
-            var expected = rowBytes * tileHeight;
+            var rowBytesLong = ((long)tileWidth * rowSamples * bitsPerSample + 7) / 8;
+            var expectedLong = rowBytesLong * tileHeight;
+            if (expectedLong > MaxBlockBytes)
+                throw new PbfFormatException(
+                    $"TIFF tile {tileWidth}x{tileHeight} would decode to {expectedLong:N0} bytes, " +
+                    $"over the {MaxBlockBytes / (1024 * 1024)} MB per-block limit; the header looks corrupt.");
+            var rowBytes = (int)rowBytesLong;
+            var expected = (int)expectedLong;
 
             var decoded = DecodeBlock(bytes, offsets[index], counts[index], compression, expected);
 
             if (predictor == 2)
                 UndoHorizontalPredictor(decoded, tileHeight, rowBytes, rowSamples, bitsPerSample);
 
-            var destX0 = tileX * tileWidth;
-            var destY0 = tileY * tileHeight;
+            var destX0 = (long)tileX * tileWidth;
+            var destY0 = (long)tileY * tileHeight;
 
             for (var ty = 0; ty < tileHeight; ty++)
             {
@@ -807,7 +985,7 @@ public static class TiffReader
                 if (destY >= height) break;
 
                 var rowOffset = ty * rowBytes;
-                var target = (long)destY * width;
+                var target = destY * width;
                 for (var tx = 0; tx < tileWidth; tx++)
                 {
                     var destX = destX0 + tx;
@@ -924,6 +1102,17 @@ public static class TiffReader
         var count = ReadU16(bytes, ifdOffset, littleEndian);
         var entryBase = ifdOffset + 2;
 
+        // Both limits are header-driven. Without them a 5 MB file can declare 65,535 entries
+        // that each point at the same 4 MB block and retain ~260 GB of decoded tags.
+        if (count > MaxIfdEntries)
+            throw new PbfFormatException(
+                $"TIFF IFD declares {count} entries, over the {MaxIfdEntries} limit; " +
+                "the header looks corrupt.");
+        if (entryBase + (long)count * 12 > bytes.Length)
+            throw new PbfFormatException("TIFF IFD is truncated.");
+
+        long decodedTagBytes = 0;
+
         for (var i = 0; i < count; i++)
         {
             var entry = entryBase + i * 12;
@@ -938,6 +1127,11 @@ public static class TiffReader
                 continue;
 
             var totalBytes = (long)typeSize * valueCount;
+            decodedTagBytes += totalBytes;
+            if (decodedTagBytes > MaxIfdTagBytes)
+                throw new PbfFormatException(
+                    $"TIFF IFD tag data exceeds {MaxIfdTagBytes / (1024 * 1024)} MB; " +
+                    "the header looks corrupt.");
             int valueOffset;
             if (totalBytes <= 4)
                 valueOffset = entry + 8;

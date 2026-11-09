@@ -33,10 +33,6 @@ public partial class MainWindow : Window
     private bool _syncingCompare;
     private bool _compareLayoutActive;
     private RipComparison? _lastComparison;
-    private CancellationTokenSource? _detailCts;
-    private Rect _detailRequestedRegion;
-    private bool _detailPending;
-    private int _detailGeneration;
     private (double CenterX, double CenterY, double Zoom)? _pendingView;
 
     public MainWindow(MainViewModel viewModel)
@@ -50,7 +46,13 @@ public partial class MainWindow : Window
         _viewModel.PlatesChanged += (_, _) =>
         {
             _detailTiles.Clear();
+            // Visibility, solo, opacity and the per-plate flips all live on the layer, so every
+            // pane showing those plates has to be told to re-composite.
             Viewer.Refresh();
+            if (CompareViewer.Visibility == Visibility.Visible)
+                CompareViewer.Refresh();
+            if (CompareOverlay.Visibility == Visibility.Visible)
+                ApplyOverlay();
         };
         _viewModel.ZoomRequested += (_, zoom) =>
         {
@@ -102,9 +104,8 @@ public partial class MainWindow : Window
         Viewer.ShowContentOverlay = _viewModel.ShowContentOverlay;
         Viewer.SimulateMetallicPaper = _viewModel.SimulateMetallicPaper;
         UpdatePaperColor();
-        Viewer.BackSideOpacity = _viewModel.BackSideOpacity;
-        _viewModel.ViewCommandRequested += OnViewCommand;
         _viewModel.CompareModeChanged += (_, _) => RefreshCompare();
+        _viewModel.ViewCommandRequested += OnViewCommand;
         // The overlay modes have their own zoom; keep the readout showing the real scale.
         CompareOverlay.ZoomChanged += (_, nativeZoom) => _viewModel.UpdateOverlayZoom(nativeZoom);
 
@@ -236,46 +237,6 @@ public partial class MainWindow : Window
         return maxX < 0 ? Rect.Empty : new Rect(minX, minY, maxX - minX, maxY - minY);
     }
 
-    private void OnViewCommand(object? sender, string command)
-    {
-        if (command.StartsWith("rotate:", StringComparison.Ordinal) &&
-            int.TryParse(command.AsSpan("rotate:".Length), out var degrees))
-        {
-            Viewer.SetRotation(degrees);
-            CompareViewer.SetRotation(degrees);
-        }
-        else
-        {
-            switch (command)
-            {
-                case "rotate":
-                    Viewer.RotateClockwise();
-                    CompareViewer.RotateClockwise();
-                    break;
-                case "fliph":
-                    Viewer.ToggleFlipHorizontal();
-                    CompareViewer.ToggleFlipHorizontal();
-                    break;
-                case "flipv":
-                    Viewer.ToggleFlipVertical();
-                    CompareViewer.ToggleFlipVertical();
-                    break;
-                case "reset":
-                    Viewer.ResetOrientation();
-                    CompareViewer.ResetOrientation();
-                    break;
-            }
-        }
-
-        _viewModel.OrientationText = Viewer.OrientationLabel;
-        _viewModel.RotationDegrees = Viewer.Orientation.Rotation;
-        _viewModel.IsFlipHorizontal = Viewer.Orientation.FlipHorizontal;
-        _viewModel.IsFlipVertical = Viewer.Orientation.FlipVertical;
-        _viewModel.ViewTransformText = Viewer.Orientation.IsIdentity
-            ? "View transform: none"
-            : "View transform: " + Viewer.Orientation.Label();
-    }
-
     /// <summary>Click-to-focus: a warning with a region zooms the viewer straight to it.</summary>
     private void PreflightList_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
@@ -379,8 +340,12 @@ public partial class MainWindow : Window
             CompareOverlay.SetReference(_lastComparison);
 
         // SetPlates resets the overlay's zoom, so the pane zoom is applied last, using the
-        // same plate width the main canvas uses for 100 %.
-        CompareOverlay.SetPlateWidth(Viewer.PlateWidthPixels);
+        // same 100 % reference the main canvas uses.
+        //
+        // NativeZoom is screen pixels per *native* plate pixel, so 100 % in the overlay has to
+        // be the native width. Passing the decoded base width made the overlay zoom off by the
+        // pyramid factor (8x on a big plate), which landed the viewport in blank paper.
+        CompareOverlay.SetPlateWidth(Viewer.PlateWidthPixels * Math.Max(1, Viewer.NativeFactor));
         CompareOverlay.SetNativeZoom(Viewer.NativeZoom);
     }
 
@@ -520,16 +485,6 @@ public partial class MainWindow : Window
                 LeftPanelColumn.Width = _viewModel.ShowPreflightPane ? new GridLength(300) : new GridLength(0);
                 LeftPanelBorder.Visibility = _viewModel.ShowPreflightPane ? Visibility.Visible : Visibility.Collapsed;
                 break;
-            case nameof(MainViewModel.BackSideOpacity):
-                Viewer.BackSideOpacity = _viewModel.BackSideOpacity;
-                CompareViewer.BackSideOpacity = _viewModel.BackSideOpacity;
-                break;
-            case nameof(MainViewModel.ShowOriginalPixels):
-                if (_viewModel.ShowOriginalPixels)
-                    Viewer.ZoomNativeTo(1.0);
-                else
-                    Viewer.FitToView();
-                break;
         }
     }
     
@@ -600,8 +555,62 @@ public partial class MainWindow : Window
         }
     }
     
-    private void ZoomPreset_Click(object sender, RoutedEventArgs e)
+    private void RotateButton_Click(object sender, RoutedEventArgs e)
     {
+        if (sender is Button { ContextMenu: { } menu } button)
+        {
+            menu.PlacementTarget = button;
+            menu.Placement = PlacementMode.Bottom;
+            menu.IsOpen = true;
+        }
+    }
+
+    private void RotatePreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem { Tag: string tag })
+            _viewModel.RotateToCommand.Execute(tag);
+    }
+
+    /// <summary>
+    /// Canvas rotation is view-only and the window owns the viewers, so the view model asks for it
+    /// through this event rather than reaching into the control.
+    /// </summary>
+    private void OnViewCommand(object? sender, string command)
+    {
+        const string prefix = "rotate:";
+        if (!command.StartsWith(prefix, StringComparison.Ordinal) ||
+            !int.TryParse(command.AsSpan(prefix.Length), out var degrees))
+            return;
+
+        Viewer.SetRotation(degrees);
+        CompareViewer.SetRotation(degrees);
+
+        // The viewer snaps to a right angle; mirror whatever it settled on.
+        _viewModel.RotationDegrees = Viewer.Rotation.Degrees;
+    }
+
+    /// <summary>Marks the preset that matches the current native zoom, so 50 % is visibly chosen.</summary>
+    private void ZoomMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu)
+            return;
+
+        var current = _viewModel.ZoomLevel;
+        foreach (var item in menu.Items.OfType<MenuItem>())
+        {
+            if (item.Tag is not string tag ||
+                !double.TryParse(tag, NumberStyles.Float, CultureInfo.InvariantCulture, out var zoom))
+            {
+                item.IsChecked = false;
+                continue;
+            }
+
+            item.IsCheckable = true;
+            item.IsChecked = Math.Abs(current - zoom) <= Math.Max(0.001, zoom * 0.01);
+        }
+    }
+
+    private void ZoomPreset_Click(object sender, RoutedEventArgs e)    {
         if (sender is MenuItem { Tag: string tag } &&
             double.TryParse(tag, NumberStyles.Float, CultureInfo.InvariantCulture, out var zoom))
         {
@@ -1017,7 +1026,9 @@ public partial class MainWindow : Window
         var kr = new float[n];
         var kg = new float[n];
         var kb = new float[n];
-        var inverted = new bool[n];
+        var flipH = new bool[n];
+        var flipV = new bool[n];
+        var srcWidth = new int[n];
         var isWhite = new bool[n];
         var opacity = new float[n];
 
@@ -1031,15 +1042,23 @@ public partial class MainWindow : Window
             var rb = source.Info.RowBytes;
             rowBytesArr[i] = rb;
             rows[i] = new byte[(long)rb * nativeRows];
-            await source.ReadRowsAsync(nativeY, nativeRows, rows[i], ct).ConfigureAwait(false);
+
+            // A vertically flipped plate reads the mirrored row range; the mirrored range is
+            // still contiguous, so it costs exactly one read.
+            flipV[i] = plate.FlipVertical;
+            flipH[i] = plate.FlipHorizontal;
+            srcWidth[i] = source.Info.Width;
+            var readY = flipV[i]
+                ? Math.Max(0, source.Info.Height - (nativeY + nativeRows))
+                : nativeY;
+
+            await source.ReadRowsAsync(readY, nativeRows, rows[i], ct).ConfigureAwait(false);
 
             kr[i] = 1f - plate.R / 255f;
             kg[i] = 1f - plate.G / 255f;
             kb[i] = 1f - plate.B / 255f;
-            inverted[i] = plate.Inverted;
             opacity[i] = (float)Math.Clamp(plate.Opacity, 0.0, 1.0);
-            isWhite[i] = plate.Separation.Color == SeparationColor.White ||
-                         plate.Name.Contains("white", StringComparison.OrdinalIgnoreCase);
+            isWhite[i] = plate.PaintsOpaqueWhite;
         }
 
         var pixels = new float[(long)outW * outH * 3];
@@ -1071,19 +1090,22 @@ public partial class MainWindow : Window
                 {
                     var sum = 0;
                     var blockX = nativeX + px * decimation; // tiles start at nativeX, not row 0
+                    var cw = srcWidth[i];
 
                     for (var dy = 0; dy < decimation; dy++)
                     {
-                        var offset = (long)(blockRow + dy) * rowBytes;
+                        // Rows are buffered in display order, so a vertical flip reverses the
+                        // buffer index rather than the read range.
+                        var bufferRow = PlateFlip.BufferRow(blockRow + dy, nativeRows, flipV[i]);
+                        var offset = (long)bufferRow * rowBytes;
                         for (var dx = 0; dx < decimation; dx++)
                         {
-                            var xx = blockX + dx;
+                            var xx = PlateFlip.MapX(blockX + dx, cw, flipH[i]);
                             sum += (row[offset + (xx >> 3)] >> (7 - (xx & 7))) & 1;
                         }
                     }
 
                     var cov = sum * invBlock;
-                    if (inverted[i]) cov = 1f - cov;
                     cov *= opacity[i];
                     if (i == 0)
                     {
@@ -1170,9 +1192,9 @@ public partial class MainWindow : Window
             ?? (separation.DisplayBrush as SolidColorBrush)?.Color
             ?? Colors.Gray;
 
-        var dialog = new ColorPickerWindow(initial) { Owner = this };
+        var dialog = new ColorPickerWindow(initial, separation.IsOpaqueWhite) { Owner = this };
         if (dialog.ShowDialog() == true)
-            separation.SetCustomColor(dialog.SelectedColor);
+            separation.SetCustomColor(dialog.SelectedColor, dialog.SelectedOpaqueWhite);
     }
 
     private void SeparationResetColor_Click(object sender, RoutedEventArgs e)
@@ -1291,11 +1313,31 @@ public partial class MainWindow : Window
                 _viewModel.SetToolCommand.Execute(ViewerTool.Measure);
                 e.Handled = true;
                 break;
+            case Key.R:
+            {
+                // Cycle the canvas a quarter turn; the button and View menu expose the four angles.
+                var next = (Viewer.Rotation.Degrees + 90) % 360;
+                _viewModel.RotateToCommand.Execute(next.ToString(CultureInfo.InvariantCulture));
+                e.Handled = true;
+                break;
+            }
             case Key.D1:
             case Key.NumPad1:
                 _viewModel.ZoomActualSizeCommand.Execute(null);
                 e.Handled = true;
                 break;
         }
+    }
+
+    /// <summary>
+    /// Releases the file watchers and cached TIFF handles. Without this the watchers outlive the
+    /// window and keep firing (and keep the plate files locked) until the process exits.
+    /// </summary>
+    protected override void OnClosed(EventArgs e)
+    {
+        _watch.Dispose();
+        _folderWatch.Dispose();
+        DisposeSources();
+        base.OnClosed(e);
     }
 }

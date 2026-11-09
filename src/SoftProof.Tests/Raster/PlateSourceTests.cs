@@ -211,7 +211,7 @@ internal static class TiffBuilder
 
     public static void WriteClassic(string path, int width, int height, int photometric,
                                     int rowsPerStrip, Func<int, int, bool> ink,
-                                    bool writePixels = true)
+                                    bool writePixels = true, int dpi = 0, int resolutionUnit = 2)
     {
         var rowBytes = (width + 7) / 8;
         var strips = (height + rowsPerStrip - 1) / rowsPerStrip;
@@ -230,12 +230,19 @@ internal static class TiffBuilder
             (284, 3, 1, 1)
         };
 
+        var withDpi = dpi > 0;
+        var rationalBytes = withDpi ? 16 : 0;   // XResolution + YResolution, one RATIONAL each
+
         var ifdStart = 8;
-        var entryCount = entries.Count + 2; // + StripOffsets, StripByteCounts
+        var entryCount = entries.Count + 2 + (withDpi ? 3 : 0); // strips + optional 282/283/296
         var ifdEnd = ifdStart + 2 + entryCount * 12 + 4;
+
+        // The strip offset/count arrays are only written out when they do not fit inline.
+        var arraysBytes = strips > 1 ? strips * 8 : 0;
         var offsetsArrayAt = ifdEnd;
         var countsArrayAt = offsetsArrayAt + strips * 4;
-        var dataStart = countsArrayAt + strips * 4;
+        var rationalAt = ifdEnd + arraysBytes;
+        var dataStart = rationalAt + rationalBytes;
 
         var offsets = new uint[strips];
         var counts = new uint[strips];
@@ -260,12 +267,25 @@ internal static class TiffBuilder
         WriteEntry(writer, 273, 4, (uint)strips, strips == 1 ? offsets[0] : (uint)offsetsArrayAt);
         WriteEntry(writer, 279, 4, (uint)strips, strips == 1 ? counts[0] : (uint)countsArrayAt);
 
+        if (withDpi)
+        {
+            WriteEntry(writer, 282, 5, 1, (uint)rationalAt);
+            WriteEntry(writer, 283, 5, 1, (uint)(rationalAt + 8));
+            WriteEntry(writer, 296, 3, 1, (uint)resolutionUnit);
+        }
+
         writer.Write(0u); // next IFD
 
         if (strips > 1)
         {
             foreach (var value in offsets) writer.Write(value);
             foreach (var value in counts) writer.Write(value);
+        }
+
+        if (withDpi)
+        {
+            writer.Write((uint)dpi); writer.Write(1u);   // XResolution
+            writer.Write((uint)dpi); writer.Write(1u);   // YResolution
         }
 
         if (writePixels)
@@ -293,6 +313,86 @@ internal static class TiffBuilder
         writer.Write(type);
         writer.Write(count);
         writer.Write(value);
+    }
+
+    /// <summary>
+    /// Tiled TIFF whose declared tile size is independent of the image size, so a header can
+    /// claim a tile far larger than the page. Used to prove the block-size guard rejects it.
+    /// </summary>
+    public static void WriteTiled(string path, int width, int height, int tileWidth, int tileLength,
+                                  int payloadBytes = 16)
+    {
+        var across = (width + tileWidth - 1) / tileWidth;
+        var down = (height + tileLength - 1) / tileLength;
+        var tiles = across * down;
+
+        var entries = new List<(ushort Tag, ushort Type, uint Count, uint Value)>
+        {
+            (256, 4, 1, (uint)width),
+            (257, 4, 1, (uint)height),
+            (258, 3, 1, 1),
+            (259, 3, 1, 1),          // no compression, so the guard is what rejects it
+            (262, 3, 1, 1),
+            (266, 3, 1, 1),
+            (277, 3, 1, 1),
+            (284, 3, 1, 1),
+            (322, 4, 1, (uint)tileWidth),
+            (323, 4, 1, (uint)tileLength)
+        };
+
+        var ifdStart = 8;
+        var entryCount = entries.Count + 2; // + TileOffsets, TileByteCounts
+        var ifdEnd = ifdStart + 2 + entryCount * 12 + 4;
+        var arraysBytes = tiles > 1 ? tiles * 8 : 0;
+        var offsetsAt = ifdEnd;
+        var countsAt = offsetsAt + tiles * 4;
+        var dataStart = offsetsAt + arraysBytes;
+
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var writer = new BinaryWriter(stream);
+
+        writer.Write((byte)'I'); writer.Write((byte)'I');
+        writer.Write((ushort)42);
+        writer.Write((uint)ifdStart);
+        writer.Write((ushort)entryCount);
+
+        foreach (var (tag, type, count, value) in entries)
+            WriteEntry(writer, tag, type, count, value);
+
+        WriteEntry(writer, 324, 4, (uint)tiles, tiles == 1 ? (uint)dataStart : (uint)offsetsAt);
+        WriteEntry(writer, 325, 4, (uint)tiles, tiles == 1 ? (uint)payloadBytes : (uint)countsAt);
+
+        writer.Write(0u); // next IFD
+
+        if (tiles > 1)
+        {
+            for (var i = 0; i < tiles; i++) writer.Write((uint)(dataStart + i * payloadBytes));
+            for (var i = 0; i < tiles; i++) writer.Write((uint)payloadBytes);
+        }
+
+        writer.Write(new byte[payloadBytes * tiles]);
+    }
+
+    /// <summary>
+    /// TIFF whose IFD declares more entries than the reader accepts. Each entry points at the
+    /// same small block, which is what makes an unbounded decoder retain memory without limit.
+    /// </summary>
+    public static void WriteOverfullIfd(string path, int entryCount)
+    {
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var writer = new BinaryWriter(stream);
+
+        writer.Write((byte)'I'); writer.Write((byte)'I');
+        writer.Write((ushort)42);
+        writer.Write((uint)8);
+        writer.Write((ushort)entryCount);
+
+        var blockAt = 8 + 2 + entryCount * 12 + 4;
+        for (var i = 0; i < entryCount; i++)
+            WriteEntry(writer, (ushort)(1000 + i), 4, 4, (uint)blockAt);
+
+        writer.Write(0u);
+        writer.Write(new byte[16]);
     }
 
     public static void WriteBigTiff(string path, int width, int height, int photometric,

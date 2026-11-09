@@ -7,9 +7,17 @@ using SoftProof.Core.Models;
 namespace SoftProof.Tools;
 
 /// <summary>
-/// Inverse Dot Gain (IDG) Tool - Hamillroad's patented technology
-/// Simulates how stochastic/FM screening reproduces on press by modeling
-/// the optical dot gain from light scattering in paper/substrate
+/// Inverse Dot Gain (IDG) Tool — experimental press simulation.
+/// <para>
+/// Models how stochastic/FM screening reproduces on press: a Gaussian or directional point
+/// spread function for light scatter in the substrate, a mechanical dot-gain tone curve, and a
+/// press threshold.
+/// </para>
+/// <para>
+/// <b>Status: experimental.</b> The physics is first-order and the gain magnitudes are not
+/// calibrated against measured press curves, so treat the output as a visualisation, not as a
+/// measurement. Any number the UI reports from this tool must be labelled as an estimate.
+/// </para>
 /// </summary>
 public class InverseDotGainTool
 {
@@ -50,17 +58,17 @@ public class InverseDotGainTool
         var psf = GeneratePointSpreadFunction(parameters);
         var convolved = Convolve2D(floatData, width, height, psf);
         
-        // Apply tone reproduction curve (TRC) for paper/ink interaction
-        var trc = GenerateTrc(parameters);
-        for (int i = 0; i < convolved.Length; i++)
-        {
-            convolved[i] = ApplyTrc(convolved[i], trc);
-        }
-        
-        // Convert back to 1-bit with thresholding (simulating press threshold)
+        // Mechanical dot gain widens every dot, which lowers the tone value at which a pixel
+        // becomes ink. Applying it to the threshold keeps paper at paper and solid at solid
+        // (modulo the PSF's zero-padded border) and peaks the gain at the midtone; shifting the
+        // field instead (the old TRC) pushed a 50 % tint above the threshold everywhere and
+        // saturated the plate to solid ink.
+        var mechanical = Math.Clamp(parameters.MechanicalDotGain / 100f, 0f, 0.5f);
+        var threshold = parameters.PressThreshold * (1f - mechanical);
+
+        // Convert back to 1-bit with the (gained) press threshold.
         var result = new byte[(width * height + 7) / 8];
-        var threshold = parameters.PressThreshold;
-        
+
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
@@ -299,41 +307,6 @@ public class InverseDotGainTool
     }
     
     /// <summary>
-    /// Generate Tone Reproduction Curve for paper/ink simulation
-    /// </summary>
-    private float[] GenerateTrc(IdgParameters parameters)
-    {
-        // TRC models: input tint % -> printed dot %
-        // Accounts for mechanical dot gain + optical dot gain
-        var trc = new float[256];
-        
-        for (int i = 0; i < 256; i++)
-        {
-            var tint = i / 255f;
-            
-            // Murray-Davies effective dot area
-            var mechanicalGain = parameters.MechanicalDotGain / 100f;
-            var opticalGain = parameters.OpticalDotGain / 100f;
-            
-            // Yule-Nielsen n-factor for optical gain
-            var n = parameters.YuleNielsenN; // Typically 1.7-2.2
-            
-            var effectiveDot = MathF.Pow(tint, 1 + mechanicalGain);
-            var printed = MathF.Pow(effectiveDot, 1 / n) * (1 + opticalGain);
-            
-            trc[i] = Math.Clamp(printed, 0, 1);
-        }
-        
-        return trc;
-    }
-    
-    private float ApplyTrc(float value, float[] trc)
-    {
-        var idx = (int)Math.Clamp(value * 255, 0, 255);
-        return trc[idx];
-    }
-    
-    /// <summary>
     /// Analyze stochastic screening quality
     /// </summary>
     public StochasticAnalysis AnalyzeStochasticQuality(byte[] separationData, int width, int height)
@@ -499,10 +472,20 @@ public class IdgParameters
     public float ScreenAngle { get; set; } = 45; // degrees
     
     // Paper/press parameters
+    /// <summary>Optical scatter radius in millimetres; drives the PSF size.</summary>
     public float OpticalDotGainMm { get; set; } = 0.03f; // mm
-    public float OpticalDotGain { get; set; } = 15; // %
+    /// <summary>
+    /// Not applied. Optical gain emerges from the PSF convolution, so adding this multiplier
+    /// counted it twice. Retained so existing callers and saved profiles still deserialize.
+    /// </summary>
+    public float OpticalDotGain { get; set; } = 15; // % (unused)
+    /// <summary>Mechanical dot gain at the 50 % tint, in percent of dot area.</summary>
     public float MechanicalDotGain { get; set; } = 10; // %
     public float PaperScatterFactor { get; set; } = 1.0f;
+    /// <summary>
+    /// Yule–Nielsen n. Part of the measurement model, not the press simulation; kept for
+    /// callers that report measured dot area.
+    /// </summary>
     public float YuleNielsenN { get; set; } = 2.0f;
     public float PressThreshold { get; set; } = 0.5f;
     

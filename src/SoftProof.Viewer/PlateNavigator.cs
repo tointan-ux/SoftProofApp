@@ -85,7 +85,7 @@ public class PlateNavigator : FrameworkElement
     {
         var level = pyramid.Levels[^1];
         return new PlateLayer(source.Separation, level.Width, level.Height, level.Coverage,
-                              source.R, source.G, source.B);
+                              source.R, source.G, source.B, resolution: source.Resolution);
     }
 
     protected override void OnRender(DrawingContext dc)

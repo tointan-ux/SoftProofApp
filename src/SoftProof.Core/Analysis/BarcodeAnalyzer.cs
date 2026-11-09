@@ -102,9 +102,9 @@ public static class BarcodeAnalyzer
         // Convert candidates to results with quiet zone / BWR analysis
         foreach (var c in foundBarcodes)
         {
-            var leftQzMm = c.LeftQuietZonePx / (double)pixelsPerMm;
-            var rightQzMm = c.RightQuietZonePx / (double)pixelsPerMm;
-            var bwrMm = c.BwrPx / (double)pixelsPerMm;
+            var leftQzMm = PxToMm(c.LeftQuietZonePx, c.Dpi);
+            var rightQzMm = PxToMm(c.RightQuietZonePx, c.Dpi);
+            var bwrMm = PxToMm(c.BwrPx, c.Dpi);
 
             var minQuietZoneMm = Math.Max(settings.BarcodeQuietZoneMm, c.NarrowBarMm * 10);
             var bwrToleranceMm = settings.BarcodeBWRToleranceMm;
@@ -119,15 +119,16 @@ public static class BarcodeAnalyzer
                 Symbology = c.Symbology,
                 QuietZoneLeftMm = leftQzMm,
                 QuietZoneRightMm = rightQzMm,
-                MinBarWidthMm = c.MinBarWidthPx / (double)(25.4 / c.Dpi),
-                MaxBarWidthMm = c.MaxBarWidthPx / (double)(25.4 / c.Dpi),
-                AvgBarWidthMm = c.AvgBarWidthPx / (double)(25.4 / c.Dpi),
+                MinBarWidthMm = PxToMm(c.MinBarWidthPx, c.Dpi),
+                MaxBarWidthMm = PxToMm(c.MaxBarWidthPx, c.Dpi),
+                AvgBarWidthMm = PxToMm(c.AvgBarWidthPx, c.Dpi),
                 NarrowBarWidthMm = c.NarrowBarMm,
                 BwrMm = bwrMm,
                 BarCount = c.BarCount,
                 QuietZoneLeftPass = leftQzMm >= minQuietZoneMm,
                 QuietZoneRightPass = rightQzMm >= minQuietZoneMm,
-                BwrPass = bwrMm <= settings.BarcodeBWRToleranceMm,
+                // Bar width reduction can be negative (bars grew); either direction is a defect.
+                BwrPass = Math.Abs(bwrMm) <= bwrToleranceMm,
                 Detail = BuildDetail(c, minQuietZoneMm, settings.BarcodeBWRToleranceMm),
                 Focus = new FocusRegion("Barcode", c.X, c.Y, c.Width, c.Height)
             };
@@ -136,6 +137,16 @@ public static class BarcodeAnalyzer
 
         return results;
     }
+
+    /// <summary>
+    /// Converts a pixel distance to millimetres at the given plate resolution.
+    /// </summary>
+    /// <remarks>
+    /// px * 25.4 / dpi. The previous form (px / (25.4 / dpi)) multiplied by dpi/25.4 instead,
+    /// which made every barcode report metre-scale bar widths and fail its quiet zone.
+    /// </remarks>
+    public static double PxToMm(int pixels, int dpi) =>
+        dpi > 0 ? pixels * 25.4 / dpi : 0;
 
     // ----- Internal analysis structures -----
 
@@ -256,8 +267,8 @@ public static class BarcodeAnalyzer
             MaxBarWidthPx = widths.Max(),
             AvgBarWidthPx = (int)Math.Round(widths.Where(w => w > 0).Average()),
             NarrowBarPx = narrowBarPx,
-            NarrowBarMm = narrowBarPx / (25.4 / (double)dpi),
-            BwrPx = Math.Max(0, bwrPx),
+            NarrowBarMm = PxToMm(narrowBarPx, dpi),
+            BwrPx = bwrPx,
             LeftQuietZonePx = leftQz,
             RightQuietZonePx = rightQz
         };

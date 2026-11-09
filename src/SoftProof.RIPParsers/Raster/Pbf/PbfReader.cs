@@ -75,7 +75,16 @@ public static class PbfReader
         var rowBytes = separation.RowBytes > 0
             ? separation.RowBytes
             : PbfSeparation.ComputeRowBytes(header.Width, separation.BitDepth);
-        var expected = (int)((long)rowBytes * header.Height);
+
+        // Long arithmetic: an int cast here silently wraps for a big plate. A page buffer is
+        // legitimately large (a 60,000 x 73,229 1-bit plate is ~550 MB), so only the Int32
+        // boundary is a defect, not the size itself.
+        var expectedLong = (long)rowBytes * header.Height;
+        if (expectedLong < 0 || expectedLong > int.MaxValue)
+            throw new PbfFormatException(
+                $"Separation '{separation.Name}' claims a {expectedLong:N0}-byte working set " +
+                $"({header.Width}x{header.Height}, {rowBytes} bytes/row); the header looks corrupt.");
+        var expected = (int)expectedLong;
 
         var raw = separation.Compression switch
         {
@@ -228,9 +237,10 @@ public static class PbfReader
         if (width <= 0 || height <= 0)
             throw new PbfFormatException($"Page buffer has invalid page size {width}x{height}.");
 
-        if ((long)width * height > 4_000_000_000L)
+        if ((long)width * height > 2_000_000_000L)
             throw new PbfFormatException(
-                $"Page buffer page size {width}x{height} is implausible for a RIP plate.");
+                $"Page buffer page size {width}x{height} is implausible for a RIP plate " +
+                "(one coverage array must fit an Int32 length).");
 
         if (separationCount <= 0 || separationCount > 64)
             throw new PbfFormatException(

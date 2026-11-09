@@ -296,7 +296,7 @@ public partial class MainViewModel
     /// <summary>A new set of plates was loaded (or cleared: empty list).</summary>
     public event EventHandler<PlateSetEventArgs>? PlatesLoaded;
     
-    /// <summary>Visible / solo / invert flags changed on one or more plates.</summary>
+    /// <summary>Visible / solo / flip flags changed on one or more plates.</summary>
     public event EventHandler? PlatesChanged;
     
     /// <summary>Asks the viewer to zoom (1.0 = 100%).</summary>

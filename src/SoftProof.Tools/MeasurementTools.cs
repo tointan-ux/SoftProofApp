@@ -42,13 +42,21 @@ public class DensitometerTool
         
         // Density = -log10(reflectance)
         var density = -MathF.Log10(Math.Max(measuredReflectance, 0.001f));
-        
+
+        // Print contrast needs a solid and a tint density. The solid is known from the ink
+        // reflectance; the measured patch supplies the tint, which makes K a real reading
+        // instead of the constant ~98% an all-paper "tint" produced.
+        var solidDensity = -MathF.Log10(Math.Max(inkReflectance, 0.001f));
+
         return new MeasurementResult
         {
             Density = density,
-            Location = region.Name,
-            DotGain = coverage * 100, // Simplified
-            PrintContrast = CalculatePrintContrast(paperReflectance, inkReflectance)
+            DotArea = coverage * 100,
+            // Dot gain is measuredTint - fileTint; the file tint is not known from the raster
+            // alone, so it is reported as not computed rather than as 0.
+            DotGain = null,
+            PrintContrast = MeasurePrintContrast(solidDensity, density),
+            Location = region.Name
         };
     }
     
@@ -133,8 +141,7 @@ public class DensitometerTool
         return result.ToArray();
     }
     
-    private float GetInkReflectance(DensityStandard standard)
-    {
+    private float GetInkReflectance(DensityStandard standard)    {
         return standard switch
         {
             DensityStandard.ANSI_T => 0.05f,   // ANSI T: darker ink
@@ -142,13 +149,6 @@ public class DensitometerTool
             DensityStandard.ISO_E => 0.07f,    // ISO E: lighter ink
             _ => 0.06f
         };
-    }
-    
-    private float CalculatePrintContrast(float paperReflectance, float inkReflectance)
-    {
-        var solidDensity = -MathF.Log10(inkReflectance);
-        var paperDensity = -MathF.Log10(paperReflectance);
-        return solidDensity > 0 ? (solidDensity - paperDensity) / solidDensity : 0;
     }
 }
 

@@ -1,7 +1,8 @@
 using System.Diagnostics;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Processing;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace SoftProof.RIPParsers.Raster;
 
@@ -14,6 +15,13 @@ public static class ReferenceRaster
 {
     private const int PdfRasterDpi = 300;
 
+    /// <summary>
+    /// Largest comparison the reference path will build. The mask and the resized reference
+    /// both cost one buffer of this size (5 bytes per pixel combined), so 32 Mpx keeps the
+    /// peak around 160 MB instead of letting a full plate request gigabytes.
+    /// </summary>
+    public const long MaxComparePixels = 32_000_000;
+
     /// <summary>Load a reference and threshold it: 1 = ink, 0 = paper.</summary>
     public static byte[] LoadInkMask(string path, int width, int height, byte threshold = 128)
     {
@@ -23,32 +31,34 @@ public static class ReferenceRaster
         if (!File.Exists(path))
             throw new FileNotFoundException("Reference file not found.", path);
 
+        var targetPixels = (long)width * height;
+        if (targetPixels > MaxComparePixels)
+            throw new InvalidOperationException(
+                $"Reference comparison is limited to {MaxComparePixels:N0} pixels; the plate is " +
+                $"{width}x{height} ({targetPixels:N0}). Compare at an overview resolution instead.");
+
         var isPdf = string.Equals(Path.GetExtension(path), ".pdf", StringComparison.OrdinalIgnoreCase);
         var imagePath = isPdf ? RasterisePdf(path) : path;
 
         try
         {
-            using var image = Image.Load<Rgba32>(imagePath);
-            image.Mutate(x => x.Resize(width, height));
+            // GDI+ decodes lazily enough to reject an oversized source before drawing it.
+            using var source = LoadBitmap(imagePath);
+            var sourcePixels = (long)source.Width * source.Height;
+            if (sourcePixels > MaxComparePixels)
+                throw new InvalidOperationException(
+                    $"Reference image is {source.Width}x{source.Height} ({sourcePixels:N0} pixels); " +
+                    $"the limit is {MaxComparePixels:N0}. Export a smaller reference.");
 
-            var mask = new byte[(long)width * height];
-
-            image.ProcessPixelRows(accessor =>
+            using var scaled = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            using (var graphics = Graphics.FromImage(scaled))
             {
-                for (var y = 0; y < height; y++)
-                {
-                    var row = accessor.GetRowSpan(y);
-                    var offset = (long)y * width;
-                    for (var x = 0; x < width; x++)
-                    {
-                        var p = row[x];
-                        var luminance = (p.R * 299 + p.G * 587 + p.B * 114) / 1000;
-                        mask[offset + x] = luminance < threshold ? (byte)1 : (byte)0;
-                    }
-                }
-            });
+                graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                graphics.DrawImage(source, new Rectangle(0, 0, width, height));
+            }
 
-            return mask;
+            return ThresholdToMask(scaled, width, height, threshold);
         }
         finally
         {
@@ -61,6 +71,58 @@ public static class ReferenceRaster
 
     /// <summary>True when a PDF can be rasterised (Ghostscript found).</summary>
     public static bool CanRasterisePdf => FindGhostscript() is not null;
+
+    /// <summary>
+    /// Loads a raster reference with GDI+. Images read from a file keep the file locked for the
+    /// bitmap's lifetime, so the bytes are copied into memory first and the stream released.
+    /// </summary>
+    private static Bitmap LoadBitmap(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            using var stream = new MemoryStream(bytes, writable: false);
+            return new Bitmap(stream);
+        }
+        catch (Exception ex) when (ex is ArgumentException or OutOfMemoryException or ExternalException)
+        {
+            throw new InvalidOperationException(
+                $"Cannot read the reference image: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>Thresholds a 24-bit bitmap into the 1-byte-per-pixel ink mask.</summary>
+    private static unsafe byte[] ThresholdToMask(Bitmap bitmap, int width, int height, byte threshold)
+    {
+        var mask = new byte[(long)width * height];
+        var bounds = new Rectangle(0, 0, width, height);
+        var data = bitmap.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+
+        try
+        {
+            for (var y = 0; y < height; y++)
+            {
+                var row = (byte*)data.Scan0 + y * data.Stride;
+                var offset = (long)y * width;
+
+                for (var x = 0; x < width; x++)
+                {
+                    // 24bpp is BGR in memory.
+                    var blue = row[x * 3];
+                    var green = row[x * 3 + 1];
+                    var red = row[x * 3 + 2];
+                    var luminance = (red * 299 + green * 587 + blue * 114) / 1000;
+                    mask[offset + x] = luminance < threshold ? (byte)1 : (byte)0;
+                }
+            }
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+
+        return mask;
+    }
 
     private static string RasterisePdf(string pdfPath)
     {

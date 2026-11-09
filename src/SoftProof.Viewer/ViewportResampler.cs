@@ -43,7 +43,8 @@ public static class ViewportResampler
         int height,
         byte[] dest,
         double opacity = 1.0,
-        Int32Rect? clip = null)
+        Int32Rect? clip = null,
+        bool allowNearest = true)
     {
         if (width <= 0 || height <= 0 || sourceRect.Width <= 0 || sourceRect.Height <= 0)
             return;
@@ -55,14 +56,15 @@ public static class ViewportResampler
         var src = new byte[stride * sh];
         bmp.CopyPixels(src, stride, 0);
 
-        DrawRaw(src, sw, sh, sourceRect, view, dpiScaleX, dpiScaleY, width, height, dest, opacity, clip);
+        DrawRaw(src, sw, sh, sourceRect, view, dpiScaleX, dpiScaleY, width, height, dest, opacity, clip,
+                allowNearest);
     }
 
     /// <summary>WPF-free core used by the renderer and by the golden-image tests.</summary>
     public static void DrawRaw(
         byte[] src, int sw, int sh, Rect sourceRect, Matrix view,
         double dpiScaleX, double dpiScaleY, int width, int height, byte[] dest, double opacity = 1.0,
-        Int32Rect? clip = null)
+        Int32Rect? clip = null, bool allowNearest = true)
     {
         var stride = sw * 4;
         var inv = view;
@@ -70,9 +72,13 @@ public static class ViewportResampler
             return;
         inv.Invert();
 
-        // Source pixels per device pixel.
-        var sx = view.M11 * dpiScaleX * (sw / sourceRect.Width);
-        var sy = view.M22 * dpiScaleY * (sh / sourceRect.Height);
+        // Source pixels per device pixel. Take the length of each matrix axis rather than
+        // M11/M22 directly: a quarter-turn rotation puts zeros on the diagonal (the axes swap),
+        // which would otherwise read as "infinitely zoomed out" and blank the canvas.
+        var axisX = Math.Sqrt(view.M11 * view.M11 + view.M12 * view.M12);
+        var axisY = Math.Sqrt(view.M21 * view.M21 + view.M22 * view.M22);
+        var sx = axisX * dpiScaleX * (sw / sourceRect.Width);
+        var sy = axisY * dpiScaleY * (sh / sourceRect.Height);
 
         for (var py = 0; py < height; py++)
         {
@@ -93,7 +99,9 @@ public static class ViewportResampler
                 double b, g, r, a;
                 if (sx >= 1.0 && sy >= 1.0)
                 {
-                    if (IsInteger(sx) && IsInteger(sy))
+                    // Nearest is only honest for the plate's own pixels. A magnified proxy level
+                    // is decimated data, so nearest just exposes the decimation as hard blocks.
+                    if (allowNearest && IsInteger(sx) && IsInteger(sy))
                         SampleNearest(src, sw, sh, stride, u, v, out b, out g, out r, out a);
                     else
                         SampleSharpBilinear(src, sw, sh, stride, u, v, sx, sy, out b, out g, out r, out a);

@@ -8,10 +8,10 @@ A **from-scratch, open-source** Windows application for professional prepress so
 - **RIP File Support**: Harlequin Page Buffer (.pbuf, .hqn), 1-bit TIFF separations, multi-channel TIFF, Esko LEN
 - **ICC Color Management**: Full LittleCMS (lcms2) integration for accurate color transforms
 - **Soft Proofing Simulation**: Display → Print simulation with rendering intents, BPC, paper/ink simulation
-- **High-Performance Viewer**: Zoom, pan, rotation, ruler overlays, multi-separation compositing
+- **High-Performance Viewer**: Zoom, pan, ruler overlays, per-plate mirroring, multi-separation compositing
 
 ### Professional Tools (FirstPROOF Parity)
-- **Inverse Dot Gain (IDG) Tool**: Hamillroad's patented stochastic/FM screening simulation
+- **Inverse Dot Gain (IDG) Tool**: experimental FM/stochastic press simulation (point-spread optical dot gain, mechanical dot-gain curve, quality scoring). Not yet calibrated against measured press curves.
   - Point Spread Function modeling for optical dot gain
   - Tone Reproduction Curve (TRC) for paper/ink interaction
   - Spectral analysis: granularity, clustering, power spectrum
@@ -47,7 +47,7 @@ SoftProof.sln
 # Clone and build
 git clone <repo>
 cd SoftProofApp
-.\build.ps1 -Configuration Release
+.\scripts\build.ps1 -Configuration Release
 
 # Or using batch
 build.bat
@@ -137,12 +137,13 @@ Monitor Display (Soft Proof)
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+O` | Open file |
-| `Ctrl+S` | Save |
-| `Ctrl+P` | Print |
-| `Ctrl+F` | Fit to window |
+| `Ctrl+W` | Close job |
+| `Ctrl+,` | Preferences |
+| `F5` | Reload job |
+| `Ctrl+0` | Fit to window |
 | `Ctrl++` / `Ctrl+-` | Zoom in/out |
-| `Ctrl+0` | Actual size |
-| `Ctrl+Space` | Toggle soft proofing |
+| `M` | Caliper / measure tool |
+| `Escape` | Exit compare mode |
 | `Middle Mouse` / `Space+Left` | Pan |
 | `Mouse Wheel` | Zoom |
 
@@ -234,7 +235,7 @@ dotnet test --collect:"XPlat Code Coverage"
 
 ## 📄 License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License - See [LICENSE](https://github.com/tointan-ux/SoftProofApp/blob/main/LICENSE) for details.
 
 ## 🙏 Acknowledgments
 

@@ -148,6 +148,10 @@ public sealed class PlateLoader : IPlateLoader
             {
                 var info = TiffReader.GetInfo(separation.FilePath, separation.PageIndex);
 
+                // Per-plate DPI: a job can mix plates from different RIP resolutions, and the
+                // job-level value is only whatever the first plate reported.
+                var plateDpi = info.Dpi > 0 ? info.Dpi : job.Metadata.Resolution;
+
                 if (info.BitsPerSample == 1 && info.SamplesPerPixel == 1 &&
                     info.Compression is 1 or 4 or 5 or 32773 &&
                     (long)info.Width * info.Height > MaxPixelsPerPlate)
@@ -200,7 +204,7 @@ public sealed class PlateLoader : IPlateLoader
                     // Keep the job at its native resolution: the decoded raster is smaller, but
                     // the plate is still a 2400 dpi plate. The viewer derives the view DPI from
                     // the pyramid factor, so nothing has to rewrite the job metadata per plate.
-                    var resolution = Math.Max(1, job.Metadata.Resolution / factor);
+                    var resolution = Math.Max(1, plateDpi / factor);
 
                     warnings?.Add(
                         $"Plate '{separation.Name}' is {info.Width}x{info.Height} px; decoded " +
@@ -215,7 +219,7 @@ public sealed class PlateLoader : IPlateLoader
                     var image = TiffReader.Read(separation.FilePath, separation.PageIndex);
                     var coverage = image.InkCoverage(0);
                     AddPlate(plates, separation, coverage, image.Width, image.Height,
-                             job.Metadata.Resolution, job, warnings);
+                             plateDpi, job, warnings);
                     progress?.Report(new PlateLoadProgress(index, plateCount, separation.Name,
                                                            "decoded", 100, false));
                 }
@@ -309,7 +313,7 @@ public sealed class PlateLoader : IPlateLoader
         }
 
         var (r, g, b) = Palette(separation);
-        plates.Add(new PlateLayer(separation, width, height, coverage, r, g, b, pyramid));
+        plates.Add(new PlateLayer(separation, width, height, coverage, r, g, b, pyramid, resolution));
     }
 
     private static byte[] Downsample(byte[] source, int width, int height, int factor)

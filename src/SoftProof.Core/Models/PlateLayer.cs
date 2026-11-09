@@ -2,7 +2,7 @@ namespace SoftProof.Core.Models;
 
 /// <summary>
 /// Raster data for one plate (separation), stored as 8-bit ink coverage (0 = no ink, 255 = solid).
-/// Also carries the per-plate display state (visible / solo / inverted) used by the viewer.
+/// Also carries the per-plate display state (visible / solo / flips / opacity) used by the viewer.
 /// </summary>
 /// <summary>Ink bounding box in plate pixels.</summary>
 public readonly record struct PixelBounds(int X, int Y, int Width, int Height)
@@ -16,7 +16,7 @@ public readonly record struct PixelBounds(int X, int Y, int Width, int Height)
 public sealed class PlateLayer
 {
     public PlateLayer(Separation separation, int width, int height, byte[] coverage, byte r, byte g, byte b,
-                      PlatePyramid? pyramid = null)
+                      PlatePyramid? pyramid = null, int resolution = 0)
     {
         if (width <= 0 || height <= 0)
             throw new ArgumentOutOfRangeException(nameof(width), "Plate size must be positive.");
@@ -31,12 +31,20 @@ public sealed class PlateLayer
         G = g;
         B = b;
         Pyramid = pyramid;
+        Resolution = resolution;
     }
     
     public Separation Separation { get; }
     public string Name => Separation.Name;
     public int Width { get; }
     public int Height { get; }
+
+    /// <summary>
+    /// Effective resolution of <see cref="Coverage"/> in dots per inch, i.e. already divided by
+    /// any pyramid decimation. 0 when the source never stated one. Per plate, because a job can
+    /// mix plates from different RIP resolutions.
+    /// </summary>
+    public int Resolution { get; }
 
     /// <summary>
     /// Optional preview pyramid. Level 0 is <see cref="Coverage"/>; coarser levels let the
@@ -62,10 +70,30 @@ public sealed class PlateLayer
     
     public bool Visible { get; set; } = true;
     public bool Solo { get; set; }
-    public bool Inverted { get; set; }
+
+    /// <summary>Mirror this plate left-to-right when compositing (per plate, not per view).</summary>
+    public bool FlipHorizontal { get; set; }
+
+    /// <summary>Mirror this plate top-to-bottom when compositing (per plate, not per view).</summary>
+    public bool FlipVertical { get; set; }
 
     /// <summary>Display transparency: 1.0 = fully opaque, 0.0 = invisible.</summary>
     public double Opacity { get; set; } = 1.0;
+
+    /// <summary>
+    /// Draw this plate as opaque white ink: it paints white over everything beneath it,
+    /// whatever the substrate colour is. Set from the per-plate custom colour dialog.
+    /// </summary>
+    public bool OpaqueWhite { get; set; }
+
+    /// <summary>
+    /// True when the plate should composite as opaque white ink — either explicitly marked, or
+    /// because the RIP already identified it as a white separation.
+    /// </summary>
+    public bool PaintsOpaqueWhite =>
+        OpaqueWhite
+        || Separation.Color == SeparationColor.White
+        || Name.Contains("white", StringComparison.OrdinalIgnoreCase);
     
     /// <summary>Average ink coverage over the whole plate, in percent. Call <see cref="ComputeStats"/> first.</summary>
     public double InkedAreaPercent { get; private set; }

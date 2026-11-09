@@ -35,6 +35,33 @@ jobs:
       - name: Build solution
         run: dotnet build ${{ env.SOLUTION }} -c ${{ env.CONFIGURATION }} --no-restore
 
+      - name: Dependency audit
+        shell: pwsh
+        # NU1902/NU1903 are no longer exempted in Directory.Build.props; this makes a known
+        # vulnerable package fail the build instead of scrolling past in a warning list.
+        run: |
+          $log = dotnet restore $env:SOLUTION --force 2>&1 | Out-String
+          $hits = ($log -split "`n") | Where-Object { $_ -match 'NU190[234]' } | Sort-Object -Unique
+          if ($hits) {
+            $hits | ForEach-Object { Write-Host $_ }
+            throw "Vulnerable package(s) detected."
+          }
+          Write-Host "No vulnerable packages."
+
+      - name: Documentation gate (CS1591)
+        shell: pwsh
+        # CONTRIBUTING.md requires XML docs on public APIs. The count is ratcheted: it may fall
+        # (a member got documented) but not rise without the baseline being raised on purpose.
+        run: |
+          $log = dotnet build $env:SOLUTION -c $env:CONFIGURATION --no-restore --no-incremental 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw "Build failed." }
+          $count = (($log -split "`n") | Where-Object { $_ -match 'warning CS1591' } | Sort-Object -Unique).Count
+          $baseline = [int]((Get-Content .github/cs1591-baseline.txt -Raw).Trim())
+          Write-Host "CS1591 (missing XML docs on public members): $count, baseline $baseline"
+          if ($count -gt $baseline) {
+            throw "CS1591 went up ($count > $baseline). Document the new public members, or raise the baseline deliberately."
+          }
+
       - name: Run tests
         run: dotnet test ${{ env.SOLUTION }} -c ${{ env.CONFIGURATION }} --no-build --logger "console;verbosity=normal"
 

@@ -151,5 +151,5 @@ public partial class App : Application
 public class ViewModelLocator
 {
     public MainViewModel Main => (Application.Current as App)?.AppHost?.Services.GetRequiredService<MainViewModel>() 
-        ?? new MainViewModel(null!, null!, null!, null!, null!, null!, null!, null!);
+        ?? new MainViewModel(null!, null!, null!, null!, null!, null!, null!);
 }

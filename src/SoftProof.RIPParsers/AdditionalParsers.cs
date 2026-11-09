@@ -5,9 +5,6 @@ using SoftProof.Core.Interfaces;
 using SoftProof.Core.Models;
 using SoftProof.RIPParsers.Raster;
 using SoftProof.RIPParsers.Raster.Tiff;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
-using SixLabors.ImageSharp.Formats.Tiff;
 
 namespace SoftProof.RIPParsers;
 
@@ -29,16 +26,17 @@ public class OneBitTiffSeparationParser : IRipParser
         _logger = logger;
     }
     
-    public async Task<bool> CanParseAsync(string filePath, CancellationToken cancellationToken = default)
+    public Task<bool> CanParseAsync(string filePath, CancellationToken cancellationToken = default)
     {
         try
         {
-            using var image = await Image.LoadAsync(filePath, cancellationToken);
-            return true;
+            // Header-only probe. Decoding the image here would allocate a whole plate just to
+            // answer "can I parse this?", which is exactly what a 4 Gpx TIFF cannot afford.
+            return Task.FromResult(TiffReader.PageCount(filePath) > 0);
         }
-        catch
+        catch (Exception ex) when (ex is PbfFormatException or IOException or UnauthorizedAccessException)
         {
-            return false;
+            return Task.FromResult(false);
         }
     }
     
@@ -78,20 +76,22 @@ public class OneBitTiffSeparationParser : IRipParser
             var baseName = Path.GetFileNameWithoutExtension(file);
             var pageNames = new List<string?>();
             for (var page = 0; page < pageCount; page++)
-                pageNames.Add(pageCount > 1 ? TiffReader.ReadPageName(file, page) : null);
+                pageNames.Add(TiffReader.ReadPageName(file, page));
 
             var useProcessOrder = pageCount is 3 or 4 && pageNames.All(string.IsNullOrWhiteSpace);
 
             for (var page = 0; page < pageCount; page++)
             {
+                // Read the description once: it carries both the colour token and, often, the
+                // screening ("175lpi 15deg") that the screen-angle preflight needs.
+                var description = pageCount == 1 ? TiffReader.ReadDescription(file, page) : null;
+                var pageName = pageNames[page];
+
                 string sepName;
                 if (pageCount == 1)
                 {
                     // A colour token in the TIFF description or page name beats the filename.
-                    sepName = SeparationNaming.ResolveName(
-                        file,
-                        TiffReader.ReadDescription(file, page),
-                        TiffReader.ReadPageName(file, page));
+                    sepName = SeparationNaming.ResolveName(file, description, pageName);
                 }
                 else if (!string.IsNullOrWhiteSpace(pageNames[page]))
                 {
@@ -112,7 +112,16 @@ public class OneBitTiffSeparationParser : IRipParser
                     var info = TiffReader.GetInfo(file, page);
                     job.Metadata.Width = info.Width;
                     job.Metadata.Height = info.Height;
-                    job.Metadata.Resolution = 2400;
+                    // Use the DPI the file states; a hardcoded default makes every mm, lpi and
+                    // dot-gain reading wrong on any plate that is not 2400 dpi.
+                    job.Metadata.Resolution = info.Dpi > 0
+                        ? info.Dpi
+                        : JobMetadata.FallbackResolution;
+                    if (info.Dpi <= 0)
+                        _logger.LogWarning(
+                            "TIFF {File} page {Page} has no resolution tag; assuming {Dpi} dpi. " +
+                            "Physical measurements may be wrong.", file, page,
+                            JobMetadata.FallbackResolution);
                     job.Metadata.BitDepth = info.BitsPerSample;
                     job.Metadata.ColorSpace = info.Photometric == 5 ? ColorSpace.CMYK : ColorSpace.Gray;
                 }
@@ -130,6 +139,14 @@ public class OneBitTiffSeparationParser : IRipParser
                 if (separation.IsSpotColor)
                 {
                     separation.SpotColorName = sepName;
+                }
+
+                // Screening only when the RIP stated it; otherwise the check reports NotRun.
+                if (ScreenInfo.TryParse(description, out var screenLpi, out var screenAngle)
+                    || ScreenInfo.TryParse(pageName, out screenLpi, out screenAngle))
+                {
+                    separation.ScreenLpi = screenLpi;
+                    separation.ScreenAngle = screenAngle;
                 }
 
                 job.Separations.Add(separation);
@@ -185,20 +202,19 @@ public class MultiChannelTiffParser : IRipParser
         _logger = logger;
     }
     
-    public async Task<bool> CanParseAsync(string filePath, CancellationToken cancellationToken = default)
+    public Task<bool> CanParseAsync(string filePath, CancellationToken cancellationToken = default)
     {
         try
         {
-            using var image = await Image.LoadAsync(filePath, cancellationToken);
-            return true;
+            return Task.FromResult(TiffReader.PageCount(filePath) > 0);
         }
-        catch
+        catch (Exception ex) when (ex is PbfFormatException or IOException or UnauthorizedAccessException)
         {
-            return false;
+            return Task.FromResult(false);
         }
     }
     
-    public async Task<PrintJob> ParseAsync(string filePath, CancellationToken cancellationToken = default)
+    public Task<PrintJob> ParseAsync(string filePath, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Parsing Multi-channel TIFF: {File}", filePath);
         
@@ -209,15 +225,18 @@ public class MultiChannelTiffParser : IRipParser
             Format = RipFormat.MultiChannelTiff
         };
         
-        using var image = await Image.LoadAsync(filePath, cancellationToken);
+        // Header only: the plate pixels are decoded by PlateLoader, which owns the budget and
+        // the downsampling. Decoding here would double the work and the memory.
+        var info = TiffReader.GetInfo(filePath);
         
-        job.Metadata.Width = image.Width;
-        job.Metadata.Height = image.Height;
-        job.Metadata.Resolution = 2400;
-        job.Metadata.BitDepth = 8;
+        job.Metadata.Width = info.Width;
+        job.Metadata.Height = info.Height;
+        job.Metadata.Resolution = info.Dpi > 0 ? info.Dpi : JobMetadata.FallbackResolution;
+        job.Metadata.BitDepth = info.BitsPerSample;
         job.Metadata.ColorSpace = ColorSpace.MultiChannel;
         
-        var channelCount = 4;
+        // One separation per sample in the file, so a 5-colour job is not reported as 4.
+        var channelCount = Math.Max(1, info.SamplesPerPixel);
         
         for (int i = 0; i < channelCount; i++)
         {
@@ -234,7 +253,7 @@ public class MultiChannelTiffParser : IRipParser
         }
         
         job.Status = JobStatus.Ready;
-        return job;
+        return Task.FromResult(job);
     }
     
     public Task<PrintJob> ParseMultipleAsync(IEnumerable<string> filePaths, CancellationToken cancellationToken = default)
@@ -288,7 +307,7 @@ public class LenFileParser : IRipParser
         job.Metadata.RipName = "Esko Flex RIP";
         job.Metadata.Width = 1;
         job.Metadata.Height = 1;
-        job.Metadata.Resolution = 2400;
+        job.Metadata.Resolution = JobMetadata.FallbackResolution;
         job.Status = JobStatus.Error;
         
         return job;
@@ -347,11 +366,6 @@ public class RipParserRegistry : IRipParser
             ?? throw new NotSupportedException($"No parser for file: {files[0]}");
         
         return await parser.ParseMultipleAsync(files, cancellationToken);
-    }
-    
-    public IRipParser? GetParserForFormat(RipFormat format)
-    {
-        return _parsers.FirstOrDefault(p => p.SupportedFormat == format);
     }
     
     public IRipParser? GetParserForFile(string filePath)

@@ -7,7 +7,7 @@ using SoftProof.Core.Models;
 namespace SoftProof.UI.ViewModels;
 
 /// <summary>
-/// Plate-panel state for a separation: raster layer (if any), solo / invert toggles, screening info.
+/// Plate-panel state for a separation: raster layer (if any), solo / flip toggles, screening info.
 /// </summary>
 public partial class SeparationViewModel
 {
@@ -39,7 +39,7 @@ public partial class SeparationViewModel
     public bool HasLayer => Layer != null;
     public bool IsTechnical => Separation.IsTechnical;
     
-    /// <summary>Set by the owning view model; called when visible / solo / invert changed.</summary>
+    /// <summary>Set by the owning view model; called when visible / solo / flip changed.</summary>
     internal Action? FlagsChanged { get; set; }
     
     /// <summary>Small preview of the plate's own artwork, shown in the plate list.</summary>
@@ -61,18 +61,32 @@ public partial class SeparationViewModel
     /// <summary>Ink colour override chosen by the user, or null for the RIP/default colour.</summary>
     public System.Windows.Media.Color? CustomColor { get; private set; }
 
+    /// <summary>
+    /// Draw this plate as opaque white ink, so it stays white whatever the substrate is.
+    /// Set from the custom colour dialog; it is a compositing mode, not a tint.
+    /// </summary>
+    public bool IsOpaqueWhite { get; private set; }
+
     /// <summary>Apply a custom display colour to this separation (including spot inks).</summary>
-    public void SetCustomColor(System.Windows.Media.Color color)
+    /// <param name="color">Display tint, ignored when <paramref name="opaqueWhite"/> is true.</param>
+    /// <param name="opaqueWhite">Composite the plate as opaque white ink.</param>
+    public void SetCustomColor(System.Windows.Media.Color color, bool opaqueWhite = false)
     {
         CustomColor = color;
+        IsOpaqueWhite = opaqueWhite;
+
+        // White ink is a mode, not a colour: show it as white in the list so the swatch and
+        // thumbnail match what the canvas actually draws.
+        var shown = opaqueWhite ? System.Windows.Media.Colors.White : color;
 
         if (Layer != null)
         {
-            Layer.SetDisplayColor(color.R, color.G, color.B);
+            Layer.OpaqueWhite = opaqueWhite;
+            Layer.SetDisplayColor(shown.R, shown.G, shown.B);
             Thumbnail = CreateThumbnail(Layer);
         }
 
-        DisplayBrush = FrozenBrush(color.R, color.G, color.B);
+        DisplayBrush = FrozenBrush(shown.R, shown.G, shown.B);
         FlagsChanged?.Invoke();
     }
 
@@ -80,9 +94,11 @@ public partial class SeparationViewModel
     public void ResetColor()
     {
         CustomColor = null;
+        IsOpaqueWhite = false;
 
         if (Layer != null)
         {
+            Layer.OpaqueWhite = false;
             Layer.SetDisplayColor(_baseR, _baseG, _baseB);
             Thumbnail = CreateThumbnail(Layer);
         }
@@ -128,9 +144,12 @@ public partial class SeparationViewModel
     
     [ObservableProperty]
     private bool _isSolo;
-    
+
     [ObservableProperty]
-    private bool _isInverted;
+    private bool _isFlipHorizontal;
+
+    [ObservableProperty]
+    private bool _isFlipVertical;
 
     [ObservableProperty]
     private double _opacity = 1.0;
@@ -154,9 +173,15 @@ public partial class SeparationViewModel
         FlagsChanged?.Invoke();
     }
     
-    partial void OnIsInvertedChanged(bool value)
+    partial void OnIsFlipHorizontalChanged(bool value)
     {
-        if (Layer != null) Layer.Inverted = value;
+        if (Layer != null) Layer.FlipHorizontal = value;
+        FlagsChanged?.Invoke();
+    }
+
+    partial void OnIsFlipVerticalChanged(bool value)
+    {
+        if (Layer != null) Layer.FlipVertical = value;
         FlagsChanged?.Invoke();
     }
     

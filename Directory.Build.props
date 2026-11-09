@@ -33,7 +33,10 @@
     <AnalysisMode>AllEnabledByDefault</AnalysisMode>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <TreatWarningsAsErrors Condition="'$(Configuration)' == 'Release'">false</TreatWarningsAsErrors>
-    <WarningsNotAsErrors>CS1591;CS1573;CS1570;CS1998;NU1601;NU1901;NU1902;NU1903;SA1116;SA1117;SA1118;SA1413;SA1503;SA1519;SA1407;CA1062;CA1002;CA1003;CA1063;CA1305;CA1308;CA1512;CA1720;CA1805;CA1819;CA2227</WarningsNotAsErrors>
+    <!-- CS1591 (missing XML docs) and the NuGet vulnerability warnings are deliberately NOT
+         exempt: CI gates CS1591 against a baseline, and a vulnerable package must be able to
+         fail the build instead of scrolling past. -->
+    <WarningsNotAsErrors>CS1573;CS1570;CS1998;NU1601;SA1116;SA1117;SA1118;SA1413;SA1503;SA1519;SA1407;CA1062;CA1002;CA1003;CA1063;CA1305;CA1308;CA1512;CA1720;CA1805;CA1819;CA2227</WarningsNotAsErrors>
     
     <!-- Source Link -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

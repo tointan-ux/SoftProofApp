@@ -95,16 +95,16 @@ public class IccProfile : IDisposable
     
     public void Dispose()
     {
-        if (!IsDisposed && Handle != IntPtr.Zero)
+        if (!IsDisposed)
         {
-            // Native handle cleanup handled by color engine
+            // The native handle belongs to the engine that opened it: LittleCmsEngine tracks
+            // every profile and closes them all in its own Dispose. Closing it here would
+            // double-free when the engine is disposed.
             Handle = IntPtr.Zero;
             IsDisposed = true;
         }
         GC.SuppressFinalize(this);
     }
-    
-    ~IccProfile() => Dispose();
 }
 
 /// <summary>
@@ -135,15 +135,14 @@ public class ColorTransform : IDisposable
     
     public void Dispose()
     {
-        if (!IsDisposed && Handle != IntPtr.Zero)
+        if (!IsDisposed)
         {
+            // Owned by LittleCmsEngine, which deletes every transform in its Dispose.
             Handle = IntPtr.Zero;
             IsDisposed = true;
         }
         GC.SuppressFinalize(this);
     }
-    
-    ~ColorTransform() => Dispose();
 }
 
 /// <summary>

@@ -99,4 +99,23 @@ public class ViewportResamplerTests
         darkestPerRow.Should().OnlyContain(v => v == darkestPerRow[0],
             "a 1-px line must have the same weight on every row (no shimmer)");
     }
+
+    [Fact]
+    public void QuarterTurn_RendersTheRotatedImage()
+    {
+        // 4x2 source; 90° clockwise maps (x,y) -> (2 - y, x), so it occupies a 2x4 dest.
+        // The colours encode the source coordinate so a wrong mapping is visible.
+        var src = MakeSource(4, 2, (x, y) => (B: (byte)0, G: (byte)(y * 120), R: (byte)(x * 60)));
+        var rotation = new Matrix(0, 1, -1, 0, 2, 0);
+        var dest = Render(src, 4, 2, rotation, 2, 4);
+
+        // Before the fix the axis scale read as 0 under a quarter turn and nothing was written.
+        for (var i = 0; i < 2 * 4; i++)
+            dest[i * 4 + 3].Should().Be(255, "every destination pixel must be covered");
+
+        // 90° clockwise: source (0,1) — the green pixel — lands at destination (0,0),
+        // and source (0,0) lands at destination (1,0).
+        At(dest, 2, 0, 0).Should().Be(At(src, 4, 0, 1));
+        At(dest, 2, 1, 0).Should().Be(At(src, 4, 0, 0));
+    }
 }

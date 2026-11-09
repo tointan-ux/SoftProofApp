@@ -26,7 +26,11 @@ public static class DielineAnalyzer
         public double InkUnderDielinePercent { get; set; } // % of dieline area with ink underneath
         public double MaxInkDensityUnderDieline { get; set; } // 0-255
         public bool KnockoutPass { get; set; }
-        public bool OverprintPass { get; set; }
+        /// <summary>
+        /// Varnish/white overprint verdict, or <c>null</c> when it was not evaluated.
+        /// Null rather than true: an unevaluated check must not read as a pass.
+        /// </summary>
+        public bool? OverprintPass { get; set; }
         public string Detail { get; set; } = string.Empty;
         public FocusRegion? Focus { get; set; }
         public List<string> AffectedPlateNames { get; set; } = new();
@@ -79,26 +83,22 @@ public static class DielineAnalyzer
         // Identify varnish and white plates
         var varnishPlates = plates.Where(p => IsVarnishPlate(p)).ToList();
         var whitePlates = plates.Where(p => IsWhitePlate(p)).ToList();
-        var allTechnicalPlates = plates.Where(p => p.Separation.IsTechnical).ToList();
 
-        // Identify artwork plates (process + spot inks that are not technical)
-        var artworkPlates = plates.Where(p => !p.Separation.IsTechnical && !IsVarnishPlate(p) && !IsWhitePlate(p)).ToList();
+        // Artwork plates are the inks that must be knocked out. The dieline itself is not
+        // artwork: counting its own ink as "ink under the dieline" failed every plate.
+        var dielineSet = new HashSet<PlateLayer>(dielinePlates);
+        var artworkPlates = plates
+            .Where(p => !dielineSet.Contains(p))
+            .Where(p => !p.Separation.IsTechnical && !IsVarnishPlate(p) && !IsWhitePlate(p))
+            .ToList();
 
         foreach (var dielinePlate in dielinePlates)
         {
             var dielineType = ClassifyDielineType(dielinePlate.Separation.Name);
-            var result = AnalyzeDielinePlate(dielinePlate, artworkPlates, varnishPlates, whitePlates, job, settings);
+            var result = AnalyzeDielinePlate(dielinePlate, artworkPlates, job, settings);
             result.DielinePlateName = dielinePlate.Separation.Name;
             result.DielineType = dielineType;
             results.Add(result);
-        }
-
-        // Check varnish/white overprint
-        foreach (var vp in varnishPlates.Concat(whitePlates))
-        {
-            var result = CheckVarnishWhiteOverprint(vp, artworkPlates, job, settings);
-            if (result != null)
-                results.Add(result);
         }
 
         return results;
@@ -203,8 +203,6 @@ public static class DielineAnalyzer
     private static DielineResult AnalyzeDielinePlate(
         PlateLayer dielinePlate,
         IReadOnlyList<PlateLayer> artworkPlates,
-        IReadOnlyList<PlateLayer> varnishPlates,
-        IReadOnlyList<PlateLayer> whitePlates,
         PrintJob job,
         PreflightSettings settings)
     {
@@ -227,7 +225,7 @@ public static class DielineAnalyzer
                 DielinePlateName = dielinePlate.Separation.Name,
                 Detail = "Dieline plate has no ink content.",
                 KnockoutPass = true,
-                OverprintPass = true
+                OverprintPass = null
             };
         }
 
@@ -243,6 +241,7 @@ public static class DielineAnalyzer
                 continue;
 
             var plateInkUnder = 0L;
+            var plateDielinePixels = 0L;
             var plateMaxDensity = 0;
 
             // Only check within dieline bounding box (expanded by a small margin)
@@ -261,6 +260,7 @@ public static class DielineAnalyzer
                     if (dielineMask[idx])
                     {
                         totalDielinePixels++;
+                        plateDielinePixels++;
                         var inkValue = artPlate.Coverage[idx];
                         if (inkValue >= minInkThreshold)
                         {
@@ -274,21 +274,20 @@ public static class DielineAnalyzer
 
             if (plateInkUnder > 0)
             {
-                affectedPlates.Add($"{artPlate.Separation.Name} ({plateInkUnder * 100.0 / totalDielinePixels:0.00}% under dieline)");
+                // Per-plate percentage uses that plate's own dieline pixel count: the running
+                // total grows by one dieline per artwork plate.
+                var percent = plateDielinePixels > 0
+                    ? plateInkUnder * 100.0 / plateDielinePixels
+                    : 0;
+                affectedPlates.Add($"{artPlate.Separation.Name} ({percent:0.00}% under dieline)");
                 if (plateMaxDensity > maxInkDensity) maxInkDensity = plateMaxDensity;
             }
         }
 
         var inkUnderPercent = totalDielinePixels > 0 ? (inkUnderPixels * 100.0 / totalDielinePixels) : 0;
-        var knockoutPass = inkUnderPercent <= settings.DielineMaxInkUnderPercent;
-
-        // Check varnish/white overprint on dieline
-        var overprintPass = true;
-        foreach (var vp in new[] { "varnish", "white" }) // placeholder
-        {
-            // Varnish/white should NOT be under the dieline (they should overprint on top)
-            // But we check this in a separate method
-        }
+        // Both the configured area limit and the configured density ceiling apply.
+        var knockoutPass = inkUnderPercent <= settings.DielineMaxInkUnderPercent
+                           && maxInkDensity <= maxInkThreshold;
 
         var focus = new FocusRegion(
             dielinePlate.Separation.Name,
@@ -309,60 +308,13 @@ public static class DielineAnalyzer
             InkUnderDielinePercent = inkUnderPercent,
             MaxInkDensityUnderDieline = maxInkDensity,
             KnockoutPass = knockoutPass,
-            OverprintPass = overprintPass,
+            // Varnish/white overprint has no evaluator yet: report "not evaluated" instead of
+            // a green tick that never ran.
+            OverprintPass = null,
             Detail = detail,
             Focus = focus,
             AffectedPlateNames = affectedPlates
         };
-    }
-
-    /// <summary>
-    /// Checks varnish/white plates for correct overprint behavior.
-    /// Varnish/white should overprint artwork, not knock it out.
-    /// </summary>
-    private static DielineResult? CheckVarnishWhiteOverprint(
-        PlateLayer vp,
-        IReadOnlyList<PlateLayer> artworkPlates,
-        PrintJob job,
-        PreflightSettings settings)
-    {
-        if (vp.Coverage == null || vp.Width == 0 || vp.Height == 0)
-            return null;
-
-        var dpi = job.Metadata.Resolution > 0 ? job.Metadata.Resolution : 2400;
-
-        // Check if varnish/white has knockout where it should overprint
-        // This is a simplified check: varnish/white should cover artwork areas
-        var vpMask = new bool[vp.Coverage.Length];
-        for (var i = 0; i < vpMask.Length; i++)
-            vpMask[i] = vp.Coverage[i] >= 128;
-
-        var knockoutPixels = 0L;
-        var totalVpPixels = 0L;
-
-        foreach (var artPlate in artworkPlates)
-        {
-            if (artPlate.Width != vp.Width || artPlate.Height != vp.Height)
-                continue;
-
-            for (var i = 0; i < vpMask.Length; i++)
-            {
-                if (vpMask[i])
-                {
-                    totalVpPixels++;
-                    var artInk = artPlate.Coverage[i];
-                    if (artInk == 0) // artwork has no ink here, but varnish/white does - that's fine
-                        continue;
-                    // If artwork has ink but varnish/white is not knocking out, that's correct overprint
-                    // If varnish/white is knocking out (has a hole where artwork is), that's wrong
-                    // Actually, in printing, varnish/white typically overprints, so we check for knockouts
-                }
-            }
-        }
-
-        // This is a complex check; for now return null (not implemented in detail)
-        // Full implementation would check for knockouts in varnish/white where artwork exists
-        return null;
     }
 
     /// <summary>

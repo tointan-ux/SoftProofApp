@@ -1,0 +1,23 @@
+{
+  "build": {
+    "content": [
+      {
+        "files": [
+          "index.md",
+          "README.md",
+          "toc.yml",
+          "docs/*.md"
+        ]
+      }
+    ],
+    "dest": "_site",
+    "globalMetadata": {
+      "_appTitle": "SoftProof",
+      "_appFooter": "SoftProof — prepress soft proofing"
+    },
+    "markdownEngineName": "markdig",
+    "template": [
+      "default"
+    ]
+  }
+}

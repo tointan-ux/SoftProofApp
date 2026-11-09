@@ -69,10 +69,16 @@ public sealed class CaliperEventArgs : EventArgs
 public class PlateViewer : FrameworkElement
 {
     private const double MinZoom = 0.01;
-    // Zoom above 100 % native is disabled. View scale 1.0 means 100 % of the *base* level,
-    // so the cap in view units is the plate's native factor (8 for a 2400 dpi plate on a
-    // 300 dpi base).
-    private double MaxZoom => Math.Max(1.0, _nativeFactor);
+
+    /// <summary>
+    /// Highest zoom the canvas allows, in relation to native pixels. The product caps the canvas
+    /// at 100 % — one plate pixel per screen pixel — so what you see is never an invented pixel.
+    /// </summary>
+    private const double MaxNativeZoom = 1.0;
+
+    // Zoom is measured in base-level pixels per DIP, so the cap in view units is the plate's
+    // native factor (8 for a 2400 dpi plate on a 300 dpi base) times the native-zoom limit.
+    private double MaxZoom => Math.Max(MaxNativeZoom, _nativeFactor * MaxNativeZoom);
     
     private IReadOnlyList<PlateLayer> _plates = Array.Empty<PlateLayer>();
     private int _width;
@@ -105,11 +111,12 @@ public class PlateViewer : FrameworkElement
     private Rect _contentBounds = Rect.Empty;
     private bool _showContentOverlay;
 
-    // Simulation and orientation.
-    private readonly PlateOrientation _orientation = new();
+    // Simulation.
     private bool _simulateMetallicPaper;
     private Color _paperColor = Colors.White;
-    private double _backSideOpacity;
+
+    // Canvas rotation (view transform), separate from per-plate flips.
+    private readonly ViewRotation _rotation = new();
 
     /// <summary>Raised when the visible region needs native-resolution pixels.</summary>
     public event EventHandler<DetailRequest>? DetailRequested;
@@ -150,6 +157,8 @@ public class PlateViewer : FrameworkElement
         Focusable = true;
         ClipToBounds = true;
         Cursor = Cursors.Arrow;
+        ToolTip = "Badge shows what the canvas is drawing: a downsampled proxy, or the plate's " +
+                  "full-resolution pixels once they have loaded.";
 
         _detailDebounce.Tick += (_, _) =>
         {
@@ -438,14 +447,22 @@ public class PlateViewer : FrameworkElement
         var layers = GetActiveLayers();
         var n = layers.Count;
         var coverage = new byte[n][];
-        var inverted = new bool[n];
+        var coverageWidth = new int[n];
+        var coverageHeight = new int[n];
+        var flipH = new bool[n];
+        var flipV = new bool[n];
         var kr = new float[n];
         var kg = new float[n];
         var kb = new float[n];
         for (var i = 0; i < n; i++)
         {
-            coverage[i] = LevelOf(layers[i], _levelIndex)?.Coverage ?? layers[i].Coverage;
-            inverted[i] = layers[i].Inverted;
+            var level = LevelOf(layers[i], _levelIndex);
+            coverage[i] = level?.Coverage ?? layers[i].Coverage;
+            coverageWidth[i] = level?.Width ?? layers[i].Width;
+            coverageHeight[i] = level?.Height ?? layers[i].Height;
+            // Flips belong to the plate, so each ink can be mirrored on its own.
+            flipH[i] = layers[i].FlipHorizontal;
+            flipV[i] = layers[i].FlipVertical;
             // How strongly this ink absorbs each channel at full coverage.
             kr[i] = 1f - layers[i].R / 255f;
             kg[i] = 1f - layers[i].G / 255f;
@@ -456,8 +473,7 @@ public class PlateViewer : FrameworkElement
         var opacity = new float[n];
         for (var i = 0; i < n; i++)
         {
-            isWhite[i] = layers[i].Separation.Color == SeparationColor.White ||
-                         layers[i].Name.Contains("white", StringComparison.OrdinalIgnoreCase);
+            isWhite[i] = layers[i].PaintsOpaqueWhite;
             opacity[i] = (float)Math.Clamp(layers[i].Opacity, 0.0, 1.0);
         }
 
@@ -471,16 +487,19 @@ public class PlateViewer : FrameworkElement
         
         Parallel.For(0, _renderHeight, y =>
         {
-            var rowStart = (y + _renderY0) * _renderLevelWidth + _renderX0;
+            var srcY = y + _renderY0;
             for (var x = 0; x < w; x++)
             {
-                var idx = rowStart + x;
+                var srcX = x + _renderX0;
                 float r = paperR, g = paperG, b = paperB;
 
                 for (var i = 0; i < n; i++)
                 {
-                    var c = coverage[i][idx] * (1f / 255f);
-                    if (inverted[i]) c = 1f - c;
+                    var cw = coverageWidth[i];
+                    var ch = coverageHeight[i];
+                    var px = PlateFlip.MapX(srcX, cw, flipH[i]);
+                    var py = PlateFlip.MapY(srcY, ch, flipV[i]);
+                    var c = coverage[i][(long)py * cw + px] * (1f / 255f);
                     c *= opacity[i];
                     if (c <= 0f) continue;
 
@@ -532,17 +551,61 @@ public class PlateViewer : FrameworkElement
 
         var inv = _view;
         inv.Invert();
-        return _orientation.InverseMatrix(_width, _height).Transform(inv.Transform(screen));
+        return _rotation.InverseMatrix(_width, _height).Transform(inv.Transform(screen));
     }
 
     public Point ImageToScreen(Point image) =>
-        _view.Transform(_orientation.GetMatrix(_width, _height).Transform(image));
-    
+        _view.Transform(_rotation.GetMatrix(_width, _height).Transform(image));
+
+    /// <summary>Canvas rotation state; applied on top of zoom/pan, and on top of per-plate flips.</summary>
+    public ViewRotation Rotation => _rotation;
+
+    /// <summary>Short label for the current canvas rotation, e.g. "90°".</summary>
+    public string RotationLabel => _rotation.Label();
+
+    /// <summary>Turns the canvas a quarter turn clockwise.</summary>
+    public void RotateClockwise()
+    {
+        _rotation.RotateClockwise();
+        AfterRotationChange();
+    }
+
+    /// <summary>Sets the canvas rotation, snapped to 0/90/180/270.</summary>
+    public void SetRotation(int degrees)
+    {
+        if (_rotation.Degrees == degrees)
+            return;
+
+        _rotation.Set(degrees);
+        AfterRotationChange();
+    }
+
+    /// <summary>Returns the canvas to 0°.</summary>
+    public void ResetRotation()
+    {
+        if (_rotation.IsIdentity)
+            return;
+
+        _rotation.Reset();
+        AfterRotationChange();
+    }
+
+    /// <summary>A quarter turn changes the sheet's aspect, so refit rather than crop it.</summary>
+    private void AfterRotationChange()
+    {
+        if (_width > 0 && ActualWidth > 0 && ActualHeight > 0)
+            FitToView();
+        else
+            InvalidateVisual();
+
+        ViewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     public void FitToView()
     {
         if (_width == 0 || ActualWidth <= 0 || ActualHeight <= 0) return;
-        
-        var oriented = _orientation.OrientedSize(_width, _height);
+
+        var oriented = _rotation.OrientedSize(_width, _height);
         var scale = Math.Min(ActualWidth / oriented.Width, ActualHeight / oriented.Height) * 0.95;
         _view = new Matrix(scale, 0, 0, scale,
             (ActualWidth - oriented.Width * scale) / 2,
@@ -551,7 +614,7 @@ public class PlateViewer : FrameworkElement
         NotifyViewChanged();
     }
     
-    /// <summary>Integer zoom stops above 100 % — every plate pixel becomes an exact N×N block.</summary>
+    /// <summary>Integer zoom stops — each plate pixel becomes an exact N×N block.</summary>
     private static readonly double[] ZoomStops = { 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0, 32.0 };
 
     /// <summary>Next stop in <paramref name="direction"/> (+1 in, -1 out) from the current zoom.</summary>
@@ -626,10 +689,18 @@ public class PlateViewer : FrameworkElement
     /// <summary>Decimation of the level currently drawn, relative to native pixels.</summary>
     public int CurrentLevelFactor => Math.Max(1, _nativeFactor) << Math.Max(0, _levelIndex);
 
+    /// <summary>Resolution the plate file declared, or 0 when it declared none.</summary>
+    private int NativeDpi => _plates.Count > 0 ? _plates[0].Resolution : 0;
+
+    /// <summary>
+    /// True when streamed detail tiles cover the viewport. They may be decimated (2 = 1200 dpi
+    /// on a 2400 dpi plate); use <see cref="ShowsNativePixels"/> for exact plate pixels.
+    /// </summary>
+    public bool ShowsDetail =>
+        _detailBitmap is not null && !_detailRect.IsEmpty && _detailRect.Contains(VisibleImageRect);
+
     /// <summary>True when native-resolution pixels are covering the viewport.</summary>
-    public bool ShowsNativePixels =>
-        _detailFactor == 1 && _detailBitmap is not null && !_detailRect.IsEmpty &&
-        _detailRect.Contains(VisibleImageRect);
+    public bool ShowsNativePixels => _detailFactor == 1 && ShowsDetail;
 
     /// <summary>Set the zoom relative to native pixels (1.0 = 100% of the plate).</summary>
     public void SetNativeZoom(double nativeZoom, Point? anchor = null) =>
@@ -651,9 +722,6 @@ public class PlateViewer : FrameworkElement
         var image = ScreenToImage(p);
         SetViewCenter(image.X, image.Y, target);
     }
-
-    /// <summary>Rotate/flip state; zoom and pan stay a separate pure-scale matrix.</summary>
-    public PlateOrientation Orientation => _orientation;
 
     /// <summary>
     /// True keeps process inks under black (overprint). False knocks the underlying inks out
@@ -683,61 +751,8 @@ public class PlateViewer : FrameworkElement
         }
     }
 
-    /// <summary>0 = front only, 1 = mirrored back side fully replacing the front.</summary>
-    public double BackSideOpacity
-    {
-        get => _backSideOpacity;
-        set
-        {
-            var clamped = Math.Clamp(value, 0, 1);
-            if (Math.Abs(_backSideOpacity - clamped) < 0.001) return;
-            _backSideOpacity = clamped;
-            InvalidateVisual();
-        }
-    }
-
     /// <summary>Native detail cannot honour the simulation modes yet; hide it rather than lie.</summary>
     public bool SimulationActive => _simulateMetallicPaper;
-
-    public string OrientationLabel => _orientation.Label();
-
-    public void RotateClockwise()
-    {
-        _orientation.RotateClockwise();
-        AfterOrientationChange();
-    }
-
-    public void SetRotation(int degrees)
-    {
-        _orientation.SetRotation(degrees);
-        AfterOrientationChange();
-    }
-
-    public void ToggleFlipHorizontal()
-    {
-        _orientation.ToggleFlipHorizontal();
-        AfterOrientationChange();
-    }
-
-    public void ToggleFlipVertical()
-    {
-        _orientation.ToggleFlipVertical();
-        AfterOrientationChange();
-    }
-
-    public void ResetOrientation()
-    {
-        _orientation.Reset();
-        AfterOrientationChange();
-    }
-
-    private void AfterOrientationChange()
-    {
-        if (_width > 0 && ActualWidth > 0 && ActualHeight > 0)
-            FitToView();
-        else
-            InvalidateVisual();
-    }
 
     /// <summary>Zoom and centre on an image rectangle (preflight click-to-focus).</summary>
     public void FocusOn(Rect imageRect, double fill = 0.8)
@@ -816,7 +831,7 @@ public class PlateViewer : FrameworkElement
             return;
 
         var level = DetailLevelForZoom();
-        var factor = 1 << level;
+        var factor = Math.Min(1 << level, MaxDetailFactor);
         var visible = VisibleImageRect;
 
         // A sync from the compare pane can raise ViewChanged without moving this view; keep the
@@ -825,7 +840,7 @@ public class PlateViewer : FrameworkElement
             !visible.IsEmpty && _detailRect.Contains(visible))
             return;
 
-        if (level >= 3)
+        if (level >= MaxDetailLevel)
         {
             _refining = false;
             _detailBitmap = null;
@@ -846,17 +861,16 @@ public class PlateViewer : FrameworkElement
     }
 
     /// <summary>
-    /// Pyramid level for the current zoom: 0 = native 2400 dpi, 1 = 1200 dpi, 2 = 600 dpi,
-    /// 3 = the 300 dpi base bitmap (no tiles needed).
+    /// Pyramid level for the current zoom: 0 = native, 1 = half, 2 = quarter, and so on.
+    /// The ceiling comes from the plate's real decimation factor (see <see cref="ViewLevels"/>).
     /// </summary>
-    private int DetailLevelForZoom()
-    {
-        // scale = screen px per native plate px; level = floor(log2(1 / scale)).
-        // 2400 dpi base pyramid has levels 0..3 (2400 / 1200 / 600 / 300 dpi).
-        var scale = NativeZoom;
-        var level = scale >= 1.0 ? 0 : (int)Math.Floor(Math.Log2(1.0 / Math.Max(scale, 1e-6)));
-        return Math.Clamp(level, 0, 3); // pyramid.MaxLevel = 3 (base is 1/8 = 300 dpi)
-    }
+    private int DetailLevelForZoom() => ViewLevels.DetailLevel(NativeZoom, _nativeFactor);
+
+    /// <summary>Doublings from native pixels down to the decoded base level.</summary>
+    private int MaxDetailLevel => ViewLevels.MaxDetailLevel(_nativeFactor);
+
+    /// <summary>Coarsest decimation the host can decode (native, half or quarter).</summary>
+    private const int MaxDetailFactor = 4;
 
     /// <summary>Ask for the best tile level for the current zoom.</summary>
     private void MaybeRequestDetail()
@@ -865,7 +879,7 @@ public class PlateViewer : FrameworkElement
             return;
 
         var level = DetailLevelForZoom();
-        if (level >= 3)
+        if (level >= MaxDetailLevel)
         {
             _refining = false;
             _requestedDetailRegion = Rect.Empty;
@@ -877,7 +891,7 @@ public class PlateViewer : FrameworkElement
             return;
         }
 
-        var factor = 1 << level;
+        var factor = Math.Min(1 << level, MaxDetailFactor);
         var visible = VisibleImageRect;
         if (visible.IsEmpty ||
             (_detailBitmap is not null && _detailFactor == factor && _detailRect.Contains(visible)))
@@ -926,7 +940,7 @@ public class PlateViewer : FrameworkElement
             return;
 
         var scale = Math.Clamp(zoom ?? Zoom, MinZoom, MaxZoom);
-        var oriented = _orientation.GetMatrix(_width, _height).Transform(new Point(imageX, imageY));
+        var oriented = _rotation.GetMatrix(_width, _height).Transform(new Point(imageX, imageY));
         _view = new Matrix(scale, 0, 0, scale,
             ActualWidth / 2 - oriented.X * scale,
             ActualHeight / 2 - oriented.Y * scale);
@@ -1210,7 +1224,7 @@ public class PlateViewer : FrameworkElement
         
         if (_bitmap == null) return;
         
-        var drawMatrix = _orientation.GetMatrix(_width, _height);
+        var drawMatrix = _rotation.GetMatrix(_width, _height);
         drawMatrix.Append(_view);
 
         // Above 50 % the view is rasterised at device resolution and shown 1:1; below that the
@@ -1223,15 +1237,15 @@ public class PlateViewer : FrameworkElement
         {
             dc.PushTransform(new MatrixTransform(drawMatrix));
             dc.DrawImage(_bitmap, _renderRect);
-            if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+            // Detail is drawn whenever it covers the view, at whatever decimation the zoom needs;
+            // gating it on >= 0.75 left a 37 dpi base magnified 30x on big plates.
+            if (_detailBitmap is not null && !SimulationActive)
                 dc.DrawImage(_detailBitmap, _detailRect);
             dc.Pop();
-            RenderBackSide(dc);
             DrawOverlaysAndChrome(dc);
             return;
         }
 
-        RenderBackSide(dc);
         DrawOverlaysAndChrome(dc);
     }
 
@@ -1251,9 +1265,13 @@ public class PlateViewer : FrameworkElement
 
         Array.Clear(_devicePixels!, 0, _devicePixels!.Length);
         if (_bitmap is not null)
-            ViewportResampler.Draw(_bitmap, _renderRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
+        {
+            // The composite is a proxy: smooth it rather than exposing the decimation grid.
+            ViewportResampler.Draw(_bitmap, _renderRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph,
+                                   _devicePixels!, allowNearest: false);
+        }
 
-        if (_detailBitmap is not null && NativeZoom >= 0.75 && !SimulationActive)
+        if (_detailBitmap is not null && !SimulationActive)
             ViewportResampler.Draw(_detailBitmap, _detailRect, drawMatrix, dpi.DpiScaleX, dpi.DpiScaleY, pw, ph, _devicePixels!);
 
         _deviceBitmap.WritePixels(new Int32Rect(0, 0, pw, ph), _devicePixels!, pw * 4, 0);
@@ -1262,37 +1280,10 @@ public class PlateViewer : FrameworkElement
         dc.DrawImage(_deviceBitmap, new Rect(0, 0, ActualWidth, ActualHeight));
     }
 
-    private void RenderBackSide(DrawingContext dc)
-    {
-        if (_backSideOpacity <= 0.001 || _bitmap is null)
-            return;
-
-        // The back side mirrors along the axis the user is flipping: left/right, top/bottom,
-        // or both. This keeps the bleed-through check aligned with the flip switch.
-        var backMatrix = (_orientation.FlipHorizontal, _orientation.FlipVertical) switch
-        {
-            (true, true) => new Matrix(-1, 0, 0, -1, _width, _height),
-            (false, true) => new Matrix(1, 0, 0, -1, 0, _height),
-            _ => new Matrix(-1, 0, 0, 1, _width, 0)
-        };
-
-        var drawMatrix = _orientation.GetMatrix(_width, _height);
-        drawMatrix.Append(_view);
-
-        dc.PushTransform(new MatrixTransform(drawMatrix));
-        dc.PushOpacity(_backSideOpacity);
-        dc.PushTransform(new MatrixTransform(backMatrix));
-        dc.DrawImage(_bitmap, _renderRect);
-        dc.Pop();
-        dc.Pop();
-        dc.Pop();
-    }
-
     private void DrawOverlaysAndChrome(DrawingContext dc)
     {
         DrawContentOverlay(dc);
         DrawResolutionBadge(dc);
-        DrawOrientationBadge(dc);
 
         // Page border
         var topLeft = ImageToScreen(new Point(0, 0));
@@ -1313,24 +1304,6 @@ public class PlateViewer : FrameworkElement
 
         DrawDensitometerMarker(dc);
         DrawCaliper(dc);
-    }
-
-    private void DrawOrientationBadge(DrawingContext dc)
-    {
-        if (_bitmap is null || _orientation.IsIdentity)
-            return;
-
-        var formatted = new FormattedText("View: " + _orientation.Label(),
-            System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
-            new Typeface("Segoe UI"), 11, Brushes.White,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
-
-        var origin = new Point(Math.Max(10, ActualWidth - formatted.Width - 16), 10);
-        var background = new SolidColorBrush(Color.FromArgb(210, 15, 21, 32));
-        background.Freeze();
-        dc.DrawRoundedRectangle(background, new Pen(new SolidColorBrush(Color.FromRgb(70, 82, 106)), 1),
-            new Rect(origin.X - 6, origin.Y - 3, formatted.Width + 12, formatted.Height + 6), 4, 4);
-        dc.DrawText(formatted, origin);
     }
 
     private void DrawContentOverlay(DrawingContext dc)
@@ -1439,22 +1412,37 @@ public class PlateViewer : FrameworkElement
         if (_bitmap is null)
             return;
 
+        // Say exactly what is on screen: a downsampled proxy, streamed detail tiles at some
+        // decimation, or the plate's own pixels. "Overview 1/8" made the user guess.
+        var dpi = NativeDpi;
+        var detailDpi = dpi > 0 ? Math.Max(1, dpi / Math.Max(1, _detailFactor)) : 0;
+        var proxyDpi = dpi > 0 ? Math.Max(1, dpi / CurrentLevelFactor) : 0;
+
+        var fullRes = dpi > 0 ? $"{dpi} dpi · native" : "native";
+        var tiles = detailDpi > 0 ? $"{detailDpi} dpi tiles" : "tiles";
+        var proxy = dpi > 0 ? $"Proxy {proxyDpi} dpi" : $"Proxy 1/{CurrentLevelFactor}";
+
         string text;
-        if (_refining && NativeZoom >= 0.75)
-            text = "Refining…";
-        else if (ShowsNativePixels)
-            text = "Native pixels";
-        else if (CurrentLevelFactor > 1)
-            text = $"Overview 1/{CurrentLevelFactor}";
+        if (_refining)
+            text = $"Refining… {(proxyDpi > 0 ? proxyDpi : proxy)} showing";
+        else if (ShowsDetail && _detailFactor <= 1)
+            text = fullRes;
+        else if (ShowsDetail)
+            text = tiles;
+        else if (CurrentLevelFactor <= 1)
+            text = fullRes;
         else
-            text = "Native pixels";
+            text = proxy;
+
+        if (!_rotation.IsIdentity)
+            text += $" · {_rotation.Label()}";
 
         var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, new Typeface("Segoe UI"), 11, Brushes.White,
             VisualTreeHelper.GetDpi(this).PixelsPerDip);
 
         // Badges live in the top-right lane; the X/Y/zoom readout owns the bottom-left lane.
-        var top = _orientation.IsIdentity ? 10 : 32;
+        var top = 10;
         var origin = new Point(Math.Max(10, ActualWidth - formatted.Width - 16), top);
         var background = new SolidColorBrush(Color.FromArgb(210, 15, 21, 32));
         dc.DrawRoundedRectangle(background, new Pen(new SolidColorBrush(Color.FromRgb(70, 82, 106)), 1),

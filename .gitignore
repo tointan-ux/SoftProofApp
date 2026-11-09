@@ -1,4 +1,4 @@
-﻿bin/
+bin/
 obj/
 bin2/
 obj2/
@@ -8,7 +8,6 @@ publish/
 dist/
 _site/
 api/
-docfx.json
 PrintJob_temp.cs
 *.ps1
 !scripts/*.ps1
